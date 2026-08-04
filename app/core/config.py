@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     app_name: str = "Smart Factory Inventory Backend"
     debug: bool = False
 
-    # rosbridge_websocket 서버 접속 정보 (ROS2 워크스페이스 쪽에서 실행)
-    rosbridge_host: str = "localhost"
-    rosbridge_port: int = 9090
+    # MQTT 브로커(Mosquitto) 접속 정보 — 로봇/센서 어댑터와의 공통 계약 (COMMAND_SCHEMA.md 10장)
+    mqtt_broker_host: str = "localhost"
+    mqtt_broker_port: int = 1883
 
 
 settings = Settings()
