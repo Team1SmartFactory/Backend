@@ -66,3 +66,12 @@ class SnapshotOut(CamelModel):
     lines: list[LineOut]
     robots: list[RobotStatusOut]
     shortage_events: list[ShortageEventOut]
+
+
+class ApproveRequest(CamelModel):
+    """POST /api/shortage-events/{id}/approve 요청 body.
+
+    API_LIST.md 10.1: 인증 도입 전까지는 항상 고정 문자열 "관리자"가 온다.
+    """
+
+    approved_by: str
