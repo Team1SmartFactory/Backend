@@ -1,0 +1,77 @@
+# 로봇/라인 레지스트리 (DEVELOPMENT_ROADMAP.md 3장, COMMAND_SCHEMA.md 2장 기준)
+#
+# 실기/시뮬 전환은 이 파일의 simulated 값만 바꾸면 된다 — 코드 수정 없음.
+# layout.bounds: TELEMETRY(x,y 미터) -> 프론트 좌표(0~100 상대값) 변환에 쓰이는
+# 평면도 전체 크기. 물리 레이아웃 확정 전까지는 임시값 (API_LIST.md 12.3 관련 결정 참고).
+
+layout:
+  bounds:
+    width: 40.0
+    height: 25.0
+
+lines:
+  - lineId: L1
+    name: "1라인"
+    partId: P-001
+    capacity: 50
+    thresholdRatio: 0.05
+    x: 8.0
+    y: 4.0
+    simulated: false # 실기
+  - lineId: L2
+    name: "2라인"
+    partId: P-002
+    capacity: 50
+    thresholdRatio: 0.05
+    x: 8.0
+    y: 14.0
+    simulated: true # 시뮬
+  - lineId: L3
+    name: "3라인"
+    partId: P-003
+    capacity: 50
+    thresholdRatio: 0.05
+    x: 8.0
+    y: 24.0
+    simulated: true # 시뮬
+
+robots:
+  # L1 (실기)
+  - robotId: omxf-storage-01
+    role: STORAGE_ARM
+    lineId: L1
+    simulated: false
+  - robotId: beagle-01
+    role: AMR
+    lineId: L1
+    simulated: false
+  - robotId: omxf-line-01
+    role: LINE_ARM
+    lineId: L1
+    simulated: false
+  # L2 (시뮬)
+  - robotId: omxf-storage-02
+    role: STORAGE_ARM
+    lineId: L2
+    simulated: true
+  - robotId: beagle-02
+    role: AMR
+    lineId: L2
+    simulated: true
+  - robotId: omxf-line-02
+    role: LINE_ARM
+    lineId: L2
+    simulated: true
+  # L3 (시뮬)
+  - robotId: omxf-storage-03
+    role: STORAGE_ARM
+    lineId: L3
+    simulated: true
+  - robotId: beagle-03
+    role: AMR
+    lineId: L3
+    simulated: true
+  - robotId: omxf-line-03
+    role: LINE_ARM
+    lineId: L3
+    simulated: true
