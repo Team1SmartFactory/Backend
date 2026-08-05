@@ -1,5 +1,6 @@
 import pytest
 
+from app.core import orchestrator
 from app.store.db import engine, get_session
 from app.store.models import Base
 from app.store.seed import seed_from_registry
@@ -21,4 +22,10 @@ def _fresh_db():
         seed_from_registry(session)
     finally:
         session.close()
+
+    # orchestrator._loop도 전역 상태라 같은 이유로 리셋한다 — TestClient를 쓴 테스트가
+    # 등록해둔 루프가 그 테스트 종료 후 닫히는데, 리셋 안 하면 다음 테스트가 그 죽은
+    # 루프를 참조하다 "Event loop is closed"로 죽는다.
+    orchestrator._loop = None
+
     yield
