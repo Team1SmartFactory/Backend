@@ -16,5 +16,8 @@ class Settings(BaseSettings):
     mqtt_broker_host: str = "localhost"
     mqtt_broker_port: int = 1883
 
+    # DB 연결 문자열 — 개발 단계 SQLite, 통합 단계 PostgreSQL로 전환 (DEVELOPMENT_ROADMAP.md 11장)
+    database_url: str = "sqlite:///./dev.db"
+
 
 settings = Settings()
