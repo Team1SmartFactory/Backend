@@ -3,18 +3,26 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.rest import router as api_router
 from app.core.config import settings
-from app.store.db import init_db
+from app.store.db import get_session, init_db
+from app.store.seed import seed_from_registry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """개발 단계 한정 — 기동 시 SQLite 테이블 자동 생성 (app/store/db.py 참고)."""
+    """개발 단계 한정 — 기동 시 SQLite 테이블 자동 생성 + registry.yaml 초기 시딩."""
     init_db()
+    session = get_session()
+    try:
+        seed_from_registry(session)
+    finally:
+        session.close()
     yield
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.include_router(api_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
