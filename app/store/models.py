@@ -30,7 +30,7 @@ class Line(Base):
     status: Mapped[str] = mapped_column(String, default="normal")  # normal | restocking
     position_x: Mapped[float] = mapped_column(Float)
     position_y: Mapped[float] = mapped_column(Float)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 class Robot(Base):
@@ -45,7 +45,7 @@ class Robot(Base):
     current_task_id: Mapped[str | None] = mapped_column(String, nullable=True)  # jobId
     position_x: Mapped[float] = mapped_column(Float, default=0.0)
     position_y: Mapped[float] = mapped_column(Float, default=0.0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 class ShortageEvent(Base):
@@ -55,13 +55,13 @@ class ShortageEvent(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     line_id: Mapped[str] = mapped_column(String, ForeignKey("lines.id"))
-    detected_at: Mapped[datetime] = mapped_column(DateTime)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String)
     # pending_approval | dispatched | in_transit | completed | rejected
     part_name: Mapped[str] = mapped_column(String)
     required_qty: Mapped[int] = mapped_column(Integer)
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
-    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Command(Base):
@@ -74,7 +74,7 @@ class Command(Base):
     robot_id: Mapped[str] = mapped_column(String, ForeignKey("robots.id"))
     action: Mapped[str] = mapped_column(String)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    issued_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class StatusEvent(Base):
@@ -88,4 +88,4 @@ class StatusEvent(Base):
     state: Mapped[str] = mapped_column(String)
     detail: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
