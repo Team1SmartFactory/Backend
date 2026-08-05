@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -5,24 +6,39 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.rest import router as api_router
 from app.core.config import settings
+from app.mqtt.client import mqtt_client
+from app.mqtt.subscriber import setup_subscriptions
 from app.store.db import get_session, init_db
 from app.store.seed import seed_from_registry
+from app.ws.router import router as ws_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """개발 단계 한정 — 기동 시 SQLite 테이블 자동 생성 + registry.yaml 초기 시딩."""
+    """개발 단계 한정 — 기동 시 SQLite 테이블 자동 생성 + registry.yaml 초기 시딩.
+
+    MQTT는 브로커가 없어도 앱이 죽지 않고 백그라운드에서 계속 재시도한다
+    (app/mqtt/client.py의 connect_async 참고).
+    """
     init_db()
     session = get_session()
     try:
         seed_from_registry(session)
     finally:
         session.close()
-    yield
+
+    loop = asyncio.get_running_loop()
+    setup_subscriptions(loop)
+    mqtt_client.connect()
+    try:
+        yield
+    finally:
+        mqtt_client.disconnect()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.include_router(api_router, prefix="/api")
+app.include_router(ws_router)
 
 app.add_middleware(
     CORSMiddleware,
