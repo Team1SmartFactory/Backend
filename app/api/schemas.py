@@ -36,6 +36,19 @@ class LineOut(CamelModel):
     position: PositionOut
 
 
+class LineUpdateOut(CamelModel):
+    """API_LIST.md 3.2 LineUpdate. WebSocket line.inventory 페이로드 — Line의 부분 데이터.
+
+    name/position이 없다 — line.inventory는 스냅샷에 이미 있는 라인에만 발행해야
+    한다 (API_LIST.md 2장 제약. name/position 없이 라인을 새로 만들면 캐시가 깨짐).
+    """
+
+    line_id: str
+    current_qty: float
+    status: str
+    updated_at: UtcDatetime
+
+
 class RobotStatusOut(CamelModel):
     """API_LIST.md 3.4 RobotStatus."""
 
