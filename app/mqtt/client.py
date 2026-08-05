@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 
 import paho.mqtt.client as mqtt
@@ -45,6 +46,13 @@ class MQTTClient:
         self._subscriptions.append((topic, qos))
         if self._connected:
             self._client.subscribe(topic, qos=qos)
+
+    def publish(self, topic: str, payload: dict, qos: int = 1) -> None:
+        """브로커가 연결돼 있지 않아도 예외를 던지지 않는다 (paho 자체 동작) —
+
+        호출부(app/api/rest.py)가 브로커 상태를 신경 안 써도 되게 한다.
+        """
+        self._client.publish(topic, json.dumps(payload), qos=qos)
 
     def connect(self) -> None:
         """브로커에 비동기로 연결을 시도한다.
