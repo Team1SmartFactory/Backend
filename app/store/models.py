@@ -31,6 +31,9 @@ class Line(Base):
     position_x: Mapped[float] = mapped_column(Float)
     position_y: Mapped[float] = mapped_column(Float)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # 반려 후 재감지 쿨다운 만료 시각. 이 값이 미래면 새 pending_approval 이벤트를 만들지 않는다
+    # (실제 감지->이벤트 생성 로직은 Job 오케스트레이터 이슈에서 이 값을 참조하게 될 예정).
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Robot(Base):
