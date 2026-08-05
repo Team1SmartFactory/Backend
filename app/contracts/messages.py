@@ -1,0 +1,137 @@
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from app.contracts.enums import (
+    ApprovalDecision,
+    CommandAction,
+    ErrorCode,
+    InventorySource,
+    InventoryStatus,
+    JobState,
+    JobTrigger,
+    OperationMode,
+    RobotRole,
+    RobotState,
+    TelemetrySource,
+)
+
+
+class MessageBase(BaseModel):
+    """모든 MQTT 메시지가 공유하는 공통 봉투. COMMAND_SCHEMA.md 1장."""
+
+    timestamp: datetime
+    schemaVersion: Literal[2] = 2
+
+
+class Command(MessageBase):
+    """대시보드(백엔드) → 로봇. COMMAND_SCHEMA.md 3장.
+
+    payload는 action/role마다 형식이 다르다 (PICK_LOAD는 partId/qty/lineId,
+    MOVE_TO는 destination 등). 지금은 일반 dict로 두고, 실제 사용 패턴이
+    좁혀지면 그때 action별 payload 모델로 세분화한다 (과설계 지양).
+    """
+
+    type: Literal["COMMAND"] = "COMMAND"
+    commandId: str
+    jobId: str | None = None
+    robotId: str
+    role: RobotRole
+    action: CommandAction
+    payload: dict = Field(default_factory=dict)
+    timeoutSec: int = 60
+
+
+class ErrorDetail(BaseModel):
+    """STATUS.payload.error. COMMAND_SCHEMA.md 4장."""
+
+    code: ErrorCode
+    message: str
+
+
+class StatusPayload(BaseModel):
+    """STATUS.payload. COMMAND_SCHEMA.md 4장.
+
+    detail은 ACCEPTED/RUNNING일 때는 자유 문자열, DONE일 때는 role별 고정값
+    (LOADED/ARRIVED/RESUMED/HOMED/ABORTED)이라 여기서는 str로만 검증한다.
+    """
+
+    detail: str | None = None
+    progress: float | None = Field(default=None, ge=0, le=1)
+    error: ErrorDetail | None = None
+
+
+class Status(MessageBase):
+    """로봇(어댑터) → 대시보드. COMMAND_SCHEMA.md 4장."""
+
+    type: Literal["STATUS"] = "STATUS"
+    commandId: str
+    jobId: str | None = None
+    robotId: str
+    state: RobotState
+    payload: StatusPayload = Field(default_factory=StatusPayload)
+
+
+class Position(BaseModel):
+    """평면도 좌표계 기준 위치 (미터). COMMAND_SCHEMA.md 5장."""
+
+    x: float
+    y: float
+    theta: float
+
+
+class Telemetry(MessageBase):
+    """실시간 위치·상태 (평면도 탭 전용, 고빈도 스트림). COMMAND_SCHEMA.md 5장."""
+
+    type: Literal["TELEMETRY"] = "TELEMETRY"
+    robotId: str
+    position: Position
+    battery: float = Field(ge=0, le=1)
+    source: TelemetrySource
+
+
+class Inventory(MessageBase):
+    """재고 감지 (천장 카메라 CV). COMMAND_SCHEMA.md 6장."""
+
+    type: Literal["INVENTORY"] = "INVENTORY"
+    lineId: str
+    partId: str
+    areaRatio: float = Field(ge=0, le=1)
+    thresholdRatio: float = Field(ge=0, le=1)
+    qtyEstimate: int
+    status: InventoryStatus
+    source: InventorySource
+    cameraId: str
+
+
+class Job(MessageBase):
+    """보충 작업 단위. COMMAND_SCHEMA.md 7장."""
+
+    type: Literal["JOB"] = "JOB"
+    jobId: str
+    lineId: str
+    partId: str
+    qty: int
+    state: JobState
+    trigger: JobTrigger
+    currentStep: int | None = None
+    commandIds: list[str] = Field(default_factory=list)
+    approvedBy: str | None = None
+
+
+class Approval(MessageBase):
+    """관리자 승인/거부 (설정 팝업 결과). COMMAND_SCHEMA.md 8장."""
+
+    type: Literal["APPROVAL"] = "APPROVAL"
+    jobId: str
+    decision: ApprovalDecision
+    userId: str
+
+
+class ModeChange(MessageBase):
+    """설정 탭의 AUTO/MANUAL 권한 스위치. COMMAND_SCHEMA.md 8장."""
+
+    type: Literal["MODE"] = "MODE"
+    mode: OperationMode
+    changedBy: str
