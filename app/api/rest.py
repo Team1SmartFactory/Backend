@@ -1,4 +1,3 @@
-import uuid
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 
@@ -8,16 +7,13 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     ApproveRequest,
     LineOut,
+    LineUpdateOut,
     PositionOut,
     RobotStatusOut,
     ShortageEventOut,
     SnapshotOut,
 )
-from app.contracts.enums import CommandAction, RobotRole
-from app.contracts.messages import Command
-from app.core.registry import registry
-from app.core.time import to_iso_z
-from app.mqtt.client import mqtt_client
+from app.core.orchestrator import start_job
 from app.store.db import get_session
 from app.store.models import Line, Robot, ShortageEvent
 from app.ws.hub import hub
@@ -84,38 +80,19 @@ def _line_out(line: Line) -> LineOut:
     )
 
 
+def _line_update_out(line: Line) -> LineUpdateOut:
+    """WebSocket line.inventory용 부분 데이터 (API_LIST.md 3.2 LineUpdate — name/position 없음)."""
+    return LineUpdateOut(
+        line_id=line.id,
+        current_qty=line.current_qty,
+        status=line.status,
+        updated_at=line.updated_at,
+    )
+
+
 def _duplicate_action_detail(event: ShortageEvent) -> str:
     """중복 승인/반려 시 반환할 한국어 에러 메시지 (API_LIST.md 12.1 확정 사항: 409 거부)."""
     return "이미 반려된 요청입니다" if event.status == "rejected" else "이미 승인된 요청입니다"
-
-
-def _dispatch_pick_load(event: ShortageEvent) -> None:
-    """승인된 부족 이벤트에 대해 보관소 OMX-F에 PICK_LOAD 커맨드 발행.
-
-    step 2(MOVE_TO)~4(하역/복귀)는 Job 오케스트레이터 이슈에서 이어서 구현한다 —
-    지금은 흐름을 시작하는 첫 커맨드만 발행한다. jobId는 오케스트레이터가 생기기
-    전까지 이 이벤트의 id를 잠정 식별자로 사용한다.
-    """
-    line_config = registry.get_line(event.line_id)
-    storage_robot = next(
-        (r for r in registry.get_robots_for_line(event.line_id) if r.role == RobotRole.STORAGE_ARM),
-        None,
-    )
-    if line_config is None or storage_robot is None:
-        return
-
-    command = Command(
-        commandId=str(uuid.uuid4()),
-        jobId=event.id,
-        robotId=storage_robot.robotId,
-        role=RobotRole.STORAGE_ARM,
-        action=CommandAction.PICK_LOAD,
-        payload={"partId": line_config.partId, "qty": event.required_qty, "lineId": event.line_id},
-        timestamp=datetime.now(timezone.utc),
-    )
-    wire_payload = command.model_dump(mode="json")
-    wire_payload["timestamp"] = to_iso_z(command.timestamp)
-    mqtt_client.publish(f"robot/{storage_robot.robotId}/cmd", wire_payload, qos=1)
 
 
 @router.post("/shortage-events/{event_id}/approve", response_model=ShortageEventOut)
@@ -135,14 +112,14 @@ async def approve_shortage_event(
     event.approved_at = datetime.now(timezone.utc)
     db.commit()
 
-    _dispatch_pick_load(event)
+    start_job(db, event)  # 1단계(PICK_LOAD) 발행. 이후 진행은 app/core/orchestrator.py가 담당.
 
     # Line.status는 진행 중인 ShortageEvent 여부로 판정 (API_LIST.md 7장) — dispatched 전이 시 restocking으로.
     line = db.get(Line, event.line_id)
     if line is not None:
         line.status = "restocking"
         db.commit()
-        await hub.broadcast({"type": "line.inventory", "payload": _line_out(line).model_dump(by_alias=True)})
+        await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
 
     event_out = _shortage_event_out(event)
     await hub.broadcast({"type": "line.shortage", "payload": event_out.model_dump(by_alias=True)})
