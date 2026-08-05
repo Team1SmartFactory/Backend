@@ -65,6 +65,10 @@ class ShortageEvent(Base):
     required_qty: Mapped[int] = mapped_column(Integer)
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Job 오케스트레이터 진행 상태 (app/core/orchestrator.py). 1~4단계, COMMAND_SCHEMA.md 7장.
+    current_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 지금 응답을 기다리고 있는 commandId — 중복/지각 STATUS 배달 방어용 (QoS 1 대비)
+    last_command_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Command(Base):
