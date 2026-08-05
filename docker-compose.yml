@@ -1,0 +1,15 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: t1be-mosquitto
+    ports:
+      - "1883:1883" # MQTT
+      - "9001:9001" # MQTT over WebSocket (디버깅용, 백엔드는 1883만 사용)
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:
