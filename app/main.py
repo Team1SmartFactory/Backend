@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.rest import router as api_router
 from app.core.config import settings
+from app.core.orchestrator import set_event_loop
 from app.mqtt.client import mqtt_client
 from app.mqtt.subscriber import setup_subscriptions
 from app.store.db import get_session, init_db
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
         session.close()
 
     loop = asyncio.get_running_loop()
+    set_event_loop(loop)  # 오케스트레이터가 커맨드 타임아웃 감시를 이 루프에 예약할 수 있게
     setup_subscriptions(loop)
     mqtt_client.connect()
     try:
