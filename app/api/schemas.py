@@ -1,23 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, PlainSerializer
 from pydantic.alias_generators import to_camel
 
+from app.core.time import to_iso_z
 
-def _to_iso_z(dt: datetime) -> str:
-    """API_LIST.md 시각 표기(ISO 8601, 예: 2026-08-04T06:07:20.123Z)에 맞춰 직렬화.
-
-    SQLite는 DateTime(timezone=True)를 줘도 tzinfo를 보존하지 않아 naive datetime이
-    돌아오는 경우가 있다 — 이 프로젝트의 모든 datetime은 저장 시점에 UTC로
-    통일돼 있다는 전제로, naive면 UTC로 간주해 명시적으로 붙여준다.
-    """
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-UtcDatetime = Annotated[datetime, PlainSerializer(_to_iso_z, return_type=str)]
+UtcDatetime = Annotated[datetime, PlainSerializer(to_iso_z, return_type=str)]
 
 
 class CamelModel(BaseModel):
