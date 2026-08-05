@@ -37,8 +37,7 @@ def setup_subscriptions(loop: asyncio.AbstractEventLoop) -> None:
         except json.JSONDecodeError:
             return  # 잘못된 메시지는 조용히 버림. 로깅은 이후 이슈에서 다룬다.
 
-        message = _route(topic, data)
-        if message is not None:
+        for message in _route(topic, data):
             asyncio.run_coroutine_threadsafe(hub.broadcast(message), loop)
 
     mqtt_client.on_message_callback = on_message
@@ -46,7 +45,7 @@ def setup_subscriptions(loop: asyncio.AbstractEventLoop) -> None:
         mqtt_client.subscribe(topic, qos)
 
 
-def _route(topic: str, data: dict) -> dict | None:
+def _route(topic: str, data: dict) -> list[dict]:
     if _STATUS_TOPIC.match(topic):
         return handle_status(Status.model_validate(data))
     if _TELEMETRY_TOPIC.match(topic):
@@ -55,4 +54,4 @@ def _route(topic: str, data: dict) -> dict | None:
         return handle_online_status(match.group("robot_id"), bool(data.get("online")))
     if _INVENTORY_TOPIC.match(topic):
         return handle_inventory(Inventory.model_validate(data))
-    return None
+    return []
