@@ -42,7 +42,7 @@ def _create_pending_event(status: str = "pending_approval") -> str:
 def test_approve_dispatches_and_publishes_command(monkeypatch):
     published = []
     monkeypatch.setattr(
-        "app.api.rest.mqtt_client.publish",
+        "app.core.orchestrator.mqtt_client.publish",
         lambda topic, payload, qos=1: published.append((topic, payload)),
     )
 
@@ -73,7 +73,7 @@ def test_approve_dispatches_and_publishes_command(monkeypatch):
 
 
 def test_approve_returns_409_when_already_dispatched(monkeypatch):
-    monkeypatch.setattr("app.api.rest.mqtt_client.publish", lambda *a, **k: None)
+    monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
     event_id = _create_pending_event(status="dispatched")
 
     with TestClient(app) as client:
