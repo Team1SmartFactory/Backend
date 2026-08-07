@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from app.core.orchestrator import advance_job, fail_job, start_job
+from app.core.orchestrator import advance_job, cancel_job, fail_job, start_job
 from app.store.db import get_session
 from app.store.models import Line, ShortageEvent
 
@@ -93,4 +93,73 @@ def test_fail_job_ignores_stale_command_id(monkeypatch):
     fail_job(session, event, "stale-command-id")
 
     assert event.status == "dispatched"
+    session.close()
+
+
+def test_cancel_job_aborts_active_robot_and_sends_amr_home(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        "app.core.orchestrator.mqtt_client.publish",
+        lambda topic, payload, qos=1: published.append((topic, payload)),
+    )
+    session = get_session()
+    event = _create_event(session)
+    start_job(session, event)  # 1단계(STORAGE_ARM PICK_LOAD) 발행 -> last_command_id 채워짐
+    published.clear()
+
+    cancel_job(session, event)
+
+    assert event.current_step is None
+    assert event.last_command_id is None
+
+    assert len(published) == 2
+    (abort_topic, abort_payload), (home_topic, home_payload) = published
+    assert abort_topic == "robot/omxf-storage-01/cmd"  # 1단계에서 마지막으로 지시했던 로봇
+    assert abort_payload["action"] == "ABORT"
+    assert home_topic == "robot/beagle-01/cmd"  # AMR은 항상 HOME
+    assert home_payload["action"] == "HOME"
+
+    session.close()
+
+
+def test_cancel_job_after_amr_step_still_sends_home_once(monkeypatch):
+    """2단계(AMR MOVE_TO)에서 취소되면 ABORT/HOME 모두 같은 AMR로 간다 — 중복 발행이 아니라 각자 다른 액션."""
+    monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
+    session = get_session()
+    event = _create_event(session)
+    start_job(session, event)
+    advance_job(session, event, event.last_command_id)  # 2단계(AMR MOVE_TO)까지 진행
+    assert event.current_step == 2
+
+    published = []
+    monkeypatch.setattr(
+        "app.core.orchestrator.mqtt_client.publish",
+        lambda topic, payload, qos=1: published.append((topic, payload)),
+    )
+    cancel_job(session, event)
+
+    actions = [payload["action"] for _, payload in published]
+    assert actions == ["ABORT", "HOME"]
+    assert all(topic == "robot/beagle-01/cmd" for topic, _ in published)
+
+    session.close()
+
+
+def test_cancel_job_with_no_prior_command_only_sends_amr_home(monkeypatch):
+    """아직 아무 커맨드도 발행 안 된 이벤트(승인 전 상태에서 취소)라면 ABORT는 건너뛴다."""
+    published = []
+    monkeypatch.setattr(
+        "app.core.orchestrator.mqtt_client.publish",
+        lambda topic, payload, qos=1: published.append((topic, payload)),
+    )
+    session = get_session()
+    event = _create_event(session, status="pending_approval")
+
+    cancel_job(session, event)
+
+    assert len(published) == 1
+    topic, payload = published[0]
+    assert topic == "robot/beagle-01/cmd"
+    assert payload["action"] == "HOME"
+
     session.close()

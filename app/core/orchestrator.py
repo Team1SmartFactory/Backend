@@ -81,16 +81,15 @@ def _build_step(event: ShortageEvent, step: int) -> tuple[str, RobotRole, Comman
     return robot_id, role, action, payload
 
 
-def _issue_step(db: Session, event: ShortageEvent, step: int) -> bool:
-    """step에 해당하는 커맨드를 MQTT로 발행하고, 이벤트 진행 상태와 커맨드 이력을 남긴다.
+def _publish_command(
+    db: Session, event: ShortageEvent, robot_id: str, role: RobotRole, action: CommandAction, payload: dict
+) -> str:
+    """커맨드 하나를 MQTT로 발행하고 이력(CommandRecord)만 남긴다.
 
-    발행과 동시에 타임아웃 감시를 예약한다.
+    event.current_step/last_command_id는 건드리지 않는다 — 4단계 시퀀스 진행(_issue_step)과
+    시퀀스 밖 취소 커맨드(cancel_job의 ABORT/HOME) 둘 다 이 함수를 쓰기 때문에, 어느 필드를
+    갱신할지는 호출자가 정한다.
     """
-    built = _build_step(event, step)
-    if built is None:
-        return False
-    robot_id, role, action, payload = built
-
     command_id = str(uuid.uuid4())
     command = Command(
         commandId=command_id,
@@ -107,6 +106,21 @@ def _issue_step(db: Session, event: ShortageEvent, step: int) -> bool:
     mqtt_client.publish(f"robot/{robot_id}/cmd", wire_payload, qos=1)
 
     db.add(CommandRecord(id=command_id, job_id=event.id, robot_id=robot_id, action=action.value, payload=payload))
+    db.commit()
+    return command_id
+
+
+def _issue_step(db: Session, event: ShortageEvent, step: int) -> bool:
+    """step에 해당하는 커맨드를 MQTT로 발행하고, 이벤트 진행 상태와 커맨드 이력을 남긴다.
+
+    발행과 동시에 타임아웃 감시를 예약한다.
+    """
+    built = _build_step(event, step)
+    if built is None:
+        return False
+    robot_id, role, action, payload = built
+
+    command_id = _publish_command(db, event, robot_id, role, action, payload)
     event.current_step = step
     event.last_command_id = command_id
     db.commit()
@@ -164,6 +178,38 @@ def advance_job(db: Session, event: ShortageEvent, completed_command_id: str) ->
         _issue_step(db, event, 4)  # Beagle 복귀 — ShortageEvent 상태엔 더 이상 영향 없음
     elif step == 4:
         pass  # 복귀 완료. 할 일 없음
+
+
+def cancel_job(db: Session, event: ShortageEvent) -> None:
+    """관리자가 라인 현황을 'sufficient'로 직접 지정해, 진행 중이던 보충 작업을 취소할 때 호출.
+
+    (PUT /lines/{id}/stock — API_LIST.md 2장) 호출 전에 event.status는 이미 rejected로
+    바뀌어 있어야 한다. 여기서는 물리적으로 움직이고 있는 로봇을 멈추고 되돌리는 것만 한다.
+
+    - ABORT는 이 job이 마지막으로 지시했던 로봇(어느 step이든)에 보내 하던 동작을 멈춘다.
+    - HOME은 항상 그 라인의 AMR(Beagle)에 보낸다 — PICK_LOAD 단계에서 취소돼도 Beagle이
+      이미 라인 쪽으로 출발했을 수 있어, step과 무관하게 무조건 복귀 지시를 하는 편이 안전하다.
+    - last_command_id를 비워 이후 지각 도착하는 STATUS가 advance_job/fail_job의 가드
+      (`event.last_command_id != completed_command_id`)에 걸려 무시되게 한다 — 별도
+      "취소됨" 신호를 추가하지 않고 기존 중복 방어 가드를 재사용한다.
+
+    ABORT/HOME 자체의 완료 여부는 추적하지 않는다(job 진행에 더 이상 영향을 주지 않으므로
+    타임아웃 감시 대상이 아니다).
+    """
+    if event.last_command_id is not None:
+        last_command = db.get(CommandRecord, event.last_command_id)
+        if last_command is not None:
+            robot_config = registry.get_robot(last_command.robot_id)
+            if robot_config is not None:
+                _publish_command(db, event, last_command.robot_id, robot_config.role, CommandAction.ABORT, {})
+
+    amr_id = _robot_for_role(event.line_id, RobotRole.AMR)
+    if amr_id is not None:
+        _publish_command(db, event, amr_id, RobotRole.AMR, CommandAction.HOME, {})
+
+    event.current_step = None
+    event.last_command_id = None
+    db.commit()
 
 
 def fail_job(db: Session, event: ShortageEvent, failed_command_id: str) -> None:

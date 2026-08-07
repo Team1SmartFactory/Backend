@@ -113,6 +113,23 @@ def test_reject_sets_rejected_and_cooldown():
         session.close()
 
 
+def test_reject_corrects_line_qty_to_normal_range():
+    """반려는 "감지가 틀렸다"는 판정이므로, 라인이 부족 색으로 남아있으면 안 된다 (statusTone.ts 기준)."""
+    event_id = _create_pending_event()
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/shortage-events/{event_id}/reject")
+
+    assert response.status_code == 200
+
+    session = get_session()
+    try:
+        line = session.get(Line, "L1")
+        assert line.current_qty > line.threshold * 2.5  # statusTone.ts의 '정상'(good) 구간
+    finally:
+        session.close()
+
+
 def test_reject_returns_409_when_already_rejected():
     event_id = _create_pending_event(status="rejected")
 
