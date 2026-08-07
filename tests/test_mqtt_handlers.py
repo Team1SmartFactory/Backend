@@ -5,7 +5,7 @@ from app.contracts.messages import Inventory, Status, Telemetry
 from app.core.orchestrator import start_job
 from app.mqtt.handlers import handle_inventory, handle_online_status, handle_status, handle_telemetry
 from app.store.db import get_session, init_db
-from app.store.models import ShortageEvent
+from app.store.models import InventoryHistoryRecord, ShortageEvent
 from app.store.seed import seed_from_registry
 
 
@@ -39,6 +39,14 @@ def test_handle_inventory_updates_line_and_returns_payload():
     assert messages[0]["payload"]["lineId"] == "L1"
     assert messages[0]["payload"]["currentQty"] == 4.0
     assert messages[0]["payload"]["updatedAt"].endswith("Z")
+
+    session = get_session()
+    try:
+        records = session.query(InventoryHistoryRecord).filter(InventoryHistoryRecord.line_id == "L1").all()
+        assert len(records) == 1
+        assert records[0].qty == 4.0
+    finally:
+        session.close()
 
 
 def test_handle_inventory_skips_unknown_line():

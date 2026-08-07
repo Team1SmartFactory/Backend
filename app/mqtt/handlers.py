@@ -18,7 +18,7 @@ from app.core.registry import registry
 from app.core.time import to_iso_z
 from app.mqtt.mapping import area_ratio_to_percent, meters_to_relative, status_to_robot_state
 from app.store.db import get_session
-from app.store.models import Line, Robot, ShortageEvent
+from app.store.models import InventoryHistoryRecord, Line, Robot, ShortageEvent
 
 
 def handle_inventory(inventory: Inventory) -> list[dict]:
@@ -27,6 +27,11 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
     스냅샷(DB)에 없는 라인은 브로드캐스트하지 않는다 — 프론트가 부분 데이터
     (LineUpdate)만으로 라인을 새로 만들면 name/position이 빠진 캐시가 생긴다
     (API_LIST.md 2장 제약).
+
+    갱신과 함께 InventoryHistoryRecord도 한 행 남긴다 (API_LIST.md 9.3, 이슈 #27) —
+    GET /lines/{id}/inventory-history가 "재접속 시 과거분 채우기" 용도로 이 값을 쓴다.
+    반려/현황 직접 지정 같은 수동 보정은 여기 안 남는다 — WS로 바로 브로드캐스트되고
+    프론트가 실시간으로 그래프에 이어 붙이므로 이력 테이블까지 이중으로 쌓을 필요가 없다.
     """
     session = get_session()
     try:
@@ -36,6 +41,7 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
 
         line.current_qty = area_ratio_to_percent(inventory.areaRatio)
         line.updated_at = inventory.timestamp
+        session.add(InventoryHistoryRecord(line_id=line.id, qty=line.current_qty, at=inventory.timestamp))
         session.commit()
 
         return [_line_message(line)]
