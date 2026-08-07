@@ -75,3 +75,23 @@ robots:
     role: LINE_ARM
     lineId: L3
     simulated: true
+
+# 카메라 (API_LIST.md 9.2, 이슈 #27). streamUrl은 실제 배선 전까지 비워둔다 —
+# 그러면 GET /cameras가 online:false로 내려주고 프론트는 자리표시자를 보여준다.
+# 나중에 실제 MJPEG 주소가 생기면 streamUrl만 채우면 된다(코드 수정 불필요).
+cameras:
+  - cameraId: cam-overview
+    scope: overview
+    label: "공장 전체 뷰"
+  - cameraId: cam-L1
+    scope: line
+    lineId: L1
+    label: "1라인"
+  - cameraId: cam-L2
+    scope: line
+    lineId: L2
+    label: "2라인"
+  - cameraId: cam-L3
+    scope: line
+    lineId: L3
+    label: "3라인"

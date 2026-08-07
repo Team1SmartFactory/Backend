@@ -99,3 +99,53 @@ class LineStockOverrideRequest(CamelModel):
 
     verdict: Literal["shortage", "sufficient"]
     by: str
+
+
+class PermissionsPayload(CamelModel):
+    """GET·PUT /api/settings/permissions 요청/응답 body 공통. API_LIST.md 9.1, 이슈 #27."""
+
+    approval_required: bool
+    authorized_approvers: list[str]
+
+
+class CameraOut(CamelModel):
+    """GET /api/cameras 응답 원소. API_LIST.md 9.2, 이슈 #27."""
+
+    id: str
+    scope: Literal["overview", "line"]
+    line_id: str | None = None
+    label: str
+    stream_url: str | None = None
+    online: bool
+
+
+class InventoryPointOut(CamelModel):
+    """GET /api/lines/{id}/inventory-history 응답 원소. API_LIST.md 9.3, 이슈 #27."""
+
+    qty: float
+    at: UtcDatetime
+
+
+class DetectionFeedbackRequest(CamelModel):
+    """POST /api/detection-feedback 요청 body. API_LIST.md 9.4, 이슈 #27."""
+
+    line_id: str
+    detected: Literal["shortage", "sufficient"]
+    corrected: Literal["shortage", "sufficient"]
+    source: Literal["approve", "reject", "manual_toggle"]
+    by: str
+    shortage_event_id: str | None = None
+
+
+class DetectionFeedbackOut(CamelModel):
+    """POST /api/detection-feedback 응답. 프론트는 응답 본문을 쓰지 않지만
+    (httpFactoryApi.ts는 z.unknown()) 디버깅·향후 조회용으로 남긴다."""
+
+    id: str
+    line_id: str
+    detected: Literal["shortage", "sufficient"]
+    corrected: Literal["shortage", "sufficient"]
+    source: Literal["approve", "reject", "manual_toggle"]
+    by: str
+    at: UtcDatetime
+    shortage_event_id: str | None = None

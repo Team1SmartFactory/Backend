@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -96,3 +96,55 @@ class StatusEvent(Base):
     detail: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PermissionsSettings(Base):
+    """승인 권한 설정. API_LIST.md 9.1, 이슈 #27.
+
+    브라우저마다 값이 갈리면 안 되는 전역 서버 값이라 싱글턴 행 하나로 둔다
+    (id는 항상 PERMISSIONS_SINGLETON_ID). 없으면 GET/PUT 처리 시 기본값으로 만든다.
+    """
+
+    __tablename__ = "permissions_settings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    approval_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    authorized_approvers: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class InventoryHistoryRecord(Base):
+    """라인 재고 추이 이력 (append 전용). API_LIST.md 9.3, 이슈 #27.
+
+    MQTT INVENTORY 수신마다(app/mqtt/handlers.py handle_inventory) 한 행씩 쌓인다.
+    수동 보정(반려/현황 직접 지정)은 여기 안 남는다 — 그 값들은 WS line.inventory로
+    바로 브로드캐스트되고 프론트가 실시간으로 그래프에 이어 붙이므로, 이 테이블은
+    "재접속 시 과거분을 채우는" 용도로만 필요하다.
+    """
+
+    __tablename__ = "inventory_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    line_id: Mapped[str] = mapped_column(String, ForeignKey("lines.id"))
+    qty: Mapped[float] = mapped_column(Float)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DetectionFeedbackRecord(Base):
+    """비전 판정 대 관리자 판정 대조 기록. API_LIST.md 9.4, 이슈 #27.
+
+    객체 인식 모델 재학습 라벨로 쌓인다. detected/corrected/source는 프론트
+    StockVerdict/FeedbackSource와 동일한 문자열 값을 그대로 저장한다.
+    """
+
+    __tablename__ = "detection_feedback"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    line_id: Mapped[str] = mapped_column(String, ForeignKey("lines.id"))
+    detected: Mapped[str] = mapped_column(String)  # shortage | sufficient
+    corrected: Mapped[str] = mapped_column(String)  # shortage | sufficient
+    source: Mapped[str] = mapped_column(String)  # approve | reject | manual_toggle
+    by: Mapped[str] = mapped_column(String)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    shortage_event_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("shortage_events.id"), nullable=True
+    )

@@ -207,40 +207,42 @@ currentQty <= threshold * 2.5  → 노란색
 
 ---
 
-## 9. 🔄 프론트 구현 완료 — 백엔드만 만들면 즉시 붙는 API
+## 9. ✅ 구현 완료 — 이슈 #27
 
-> 예전엔 "나중에 필요, 지금 구현 안 함"으로 분류했으나 **프론트 작업이 이미 끝나 있음.** 프론트는 라우터가 없는 동안 안전한 기본값(빈 배열 등)으로 폴백 중이라, 백엔드가 만들면 바로 연결됨. **셋 다 독립적이라 하나씩 순차 구현 가능.**
+> 예전엔 "나중에 필요, 지금 구현 안 함"으로 분류했으나 프론트 작업이 먼저 끝나 있었고,
+> **이슈 #27에서 4개 전부 구현 완료.** 프론트 `endpoints.ts`의 `NOT_YET_IMPLEMENTED`에서
+> 이름을 빼면(=이미 뺀 상태) 실제 호출로 전환된다.
 
-### 9.1 승인 권한 설정 — 우선순위 높음
-로봇 **자동 동작 여부**를 결정하는 값이라 서버 보관 필수 (지금은 브라우저마다 값이 달라 관리자 A가 자동 모드를 켜도 관리자 B 화면엔 반영 안 됨).
+### 9.1 승인 권한 설정
+로봇 **자동 동작 여부**를 결정하는 값이라 서버 보관 필수 (브라우저마다 값이 갈리면 관리자 A가 자동 모드를 켜도 관리자 B 화면엔 반영 안 됨).
 
 | 기능 | Method | Path | Body |
 |---|---|---|---|
 | 조회 | GET | `/api/settings/permissions` | `{ approvalRequired: boolean, authorizedApprovers: string[] }` |
 | 저장 | PUT | `/api/settings/permissions` | 동일 |
 
-- 프론트 상태: **완료.** 설정 탭이 이 API를 호출하며 저장 중 로딩·실패 표시까지 붙어 있음
-- 폴백 중 동작: `{ approvalRequired: true, authorizedApprovers: ["admin"] }`
-- ⚠️ **`PUT` 응답은 서버가 정규화한 값을 돌려줄 것.** 프론트가 응답을 그대로 캐시에 씀 (승인자 이름 공백 제거 등 서버 가공을 신뢰)
+- DB: `permissions_settings` 싱글턴 행. 없으면 GET/PUT 처리 시 기본값(`{ approvalRequired: true, authorizedApprovers: ["admin"] }`)으로 생성
+- `PUT` 응답은 서버가 정규화한 값을 돌려줌 — 공백 제거, 빈 문자열 제거, 순서 유지 중복 제거 (`app/api/rest.py:_normalize_approvers`)
 
 ### 9.2 카메라 목록
-**카메라-라인이 1:1 아닐 수 있음** (라인당 여러 대 가능) — `cam-{lineId}` 파생 로직은 프론트에서 제거됨.
+**카메라-라인이 1:1 아님** — `scope: "overview" | "line"`로 구분하고, `overview`는 공장 전체 뷰라 `lineId`가 없다 (프론트 CCTV 전체뷰 기능 추가에 맞춰 갱신, 이슈 #27).
 
 | 기능 | Method | Path | Response |
 |---|---|---|---|
-| 카메라 목록 | GET | `/api/cameras` | `[{ id, lineId, label, streamUrl, online }]` |
+| 카메라 목록 | GET | `/api/cameras` | `[{ id, scope, lineId?, label, streamUrl?, online }]` |
 
 | 필드 | 타입 | 필수 |
 |---|---|---|
 | `id` | string | ✅ |
-| `lineId` | string | ✅ |
+| `scope` | `"overview"` \| `"line"` | ✅ |
+| `lineId` | string | `scope: "line"`일 때만 |
 | `label` | string | ✅ |
-| `streamUrl` | string | ✅ (12.3에서 필수로 확정 — `online:false`일 때만 필드 생략) |
+| `streamUrl` | string | `online: true`일 때만 (12.3: `online:false`면 생략) |
 | `online` | boolean | ✅ |
 
-- 프론트 상태: **목록 연동 완료** (CCTV 탭, 평면도 사이드 패널). **영상 재생 자체는 아직 미구현** — 12.3 참고
-- 폴백 중 동작: 빈 배열 → "등록된 카메라가 없습니다"
-- 스트림 방식은 **MJPEG over HTTP로 확정** (C270 1대 + 로컬 네트워크 환경, `<img src={streamUrl}>` 한 줄로 재생). 세부 확정사항 12.3 참고
+- DB 없이 `config/registry.yaml`의 `cameras:` 목록을 그대로 읽음 — 실시간 헬스체크는 아직 없고, `online`은 `streamUrl` 유무로만 판단(`streamUrl`이 비어 있으면 `online: false`)
+- ⚠️ **아직 실제 카메라가 배선되지 않아 전부 `streamUrl: null`, `online: false`로 응답함.** 프론트는 이 경우 자리표시자를 보여주므로 정상 동작. 실제 카메라 연결은 `registry.yaml`에 `streamUrl`만 채우면 됨(코드 수정 불필요)
+- 스트림 방식은 MJPEG over HTTP로 확정(12.3) — 실제 연결 시 `streamUrl`에 그 MJPEG 주소를 채울 것
 
 ### 9.3 재고 추이 이력
 
@@ -248,12 +250,19 @@ currentQty <= threshold * 2.5  → 노란색
 |---|---|---|---|
 | 라인 재고 이력 | GET | `/api/lines/{id}/inventory-history` | `[{ qty, at }]` |
 
-- 프론트 상태: **완료.** 평면도에서 라인 선택 시 호출
-- 폴백 중 동작: 빈 배열 → 그래프가 WS 수신분만으로 채워짐
-- 🆕 **프론트는 쿼리 파라미터(`?from=&to=`)를 보내지 않음** — 서버가 기본 반환 범위를 정할 것. 프론트가 응답 뒤에 WS 값을 이어 붙여 **최근 30포인트만 유지**하므로 **30개 정도면 충분**
-- 정렬: **오래된 것 → 최신 순** (프론트가 배열 순서 그대로 좌→우로 그림)
+- DB: `inventory_history` 테이블, MQTT `INVENTORY` 수신마다(`app/mqtt/handlers.py:handle_inventory`) 한 행씩 적재
+- 쿼리 파라미터 없음. 최근 30개, 오래된 것 → 최신 순으로 반환 (프론트가 응답 뒤에 WS 값을 이어 붙여 최근 30포인트만 유지하므로 그 이상 필요 없음)
+- 반려(`POST .../reject`)·현황 직접 지정(`PUT /lines/{id}/stock`) 같은 수동 보정은 이 테이블에 안 남음 — WS `line.inventory`로 바로 브로드캐스트되고 프론트가 실시간으로 그래프에 이어 붙이므로 이중 적재가 불필요
 
-> DB/ORM은 이전 결정 유지 — SQLite(개발)→PostgreSQL(통합), SQLAlchemy. 이력성 응답이라 페이지네이션 설계(offset 기반)를 적용해도 되지만, 9.3은 프론트가 최근 30개만 쓰므로 필수는 아님.
+### 9.4 객체 인식 학습 피드백
+
+| 기능 | Method | Path | Request |
+|---|---|---|---|
+| 판정 대조 기록 | POST | `/api/detection-feedback` | `{ lineId, detected, corrected, source, by, shortageEventId? }` |
+
+- `detected`/`corrected`: `"shortage"` \| `"sufficient"`, `source`: `"approve"` \| `"reject"` \| `"manual_toggle"`
+- DB: `detection_feedback` 테이블(append 전용). 응답 본문은 생성된 레코드를 그대로 돌려주지만 프론트는 본문을 쓰지 않음(`httpFactoryApi.ts`가 `z.unknown()`으로 받음) — 저장만 되면 충분
+- `lineId`가 라인 목록에 없거나 `shortageEventId`가 존재하지 않는 이벤트를 가리키면 404
 
 ---
 
