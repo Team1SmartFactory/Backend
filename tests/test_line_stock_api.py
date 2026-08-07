@@ -1,0 +1,143 @@
+import uuid
+from datetime import datetime, timezone
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.store.db import get_session, init_db
+from app.store.models import Line, ShortageEvent
+from app.store.seed import seed_from_registry
+
+
+def _ensure_seeded() -> None:
+    init_db()
+    session = get_session()
+    try:
+        seed_from_registry(session)
+    finally:
+        session.close()
+
+
+def _create_event(status: str, line_id: str = "L1") -> str:
+    _ensure_seeded()
+    session = get_session()
+    try:
+        event_id = f"evt-{uuid.uuid4().hex[:8]}"
+        session.add(
+            ShortageEvent(
+                id=event_id,
+                line_id=line_id,
+                detected_at=datetime.now(timezone.utc),
+                status=status,
+                part_name="M6 볼트 세트",
+                required_qty=47,
+            )
+        )
+        session.commit()
+        return event_id
+    finally:
+        session.close()
+
+
+def test_shortage_verdict_creates_dispatched_event_and_publishes_pick_load(monkeypatch):
+    _ensure_seeded()
+    published = []
+    monkeypatch.setattr(
+        "app.core.orchestrator.mqtt_client.publish",
+        lambda topic, payload, qos=1: published.append((topic, payload)),
+    )
+
+    with TestClient(app) as client:
+        response = client.put("/api/lines/L1/stock", json={"verdict": "shortage", "by": "관리자"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == "L1"
+    assert data["status"] == "restocking"
+
+    session = get_session()
+    try:
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "L1").all()
+        assert len(events) == 1
+        assert events[0].status == "dispatched"
+        assert events[0].approved_by == "관리자"
+    finally:
+        session.close()
+
+    # 승인 절차 없이 바로 PICK_LOAD가 발행됐는지 확인
+    assert len(published) == 1
+    topic, payload = published[0]
+    assert topic == "robot/omxf-storage-01/cmd"
+    assert payload["action"] == "PICK_LOAD"
+
+
+def test_shortage_verdict_returns_409_when_already_in_progress(monkeypatch):
+    monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
+    _create_event(status="dispatched")
+
+    with TestClient(app) as client:
+        response = client.put("/api/lines/L1/stock", json={"verdict": "shortage", "by": "관리자"})
+
+    assert response.status_code == 409
+
+
+def test_sufficient_verdict_closes_active_event_and_corrects_line(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        "app.core.orchestrator.mqtt_client.publish",
+        lambda topic, payload, qos=1: published.append((topic, payload)),
+    )
+    event_id = _create_event(status="dispatched")
+
+    session = get_session()
+    try:
+        # dispatched 상태를 만들면서 진행 중이던 커맨드(PICK_LOAD)가 있었던 것처럼 세팅
+        from app.core.orchestrator import start_job
+
+        event = session.get(ShortageEvent, event_id)
+        start_job(session, event)
+    finally:
+        session.close()
+    published.clear()  # start_job이 발행한 PICK_LOAD는 이 테스트의 관심사가 아님
+
+    with TestClient(app) as client:
+        response = client.put("/api/lines/L1/stock", json={"verdict": "sufficient", "by": "관리자"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "normal"
+    assert data["currentQty"] > data["threshold"] * 2.5
+
+    session = get_session()
+    try:
+        event = session.get(ShortageEvent, event_id)
+        assert event.status == "rejected"
+        assert event.last_command_id is None  # 취소 후 지각 STATUS가 무시되도록 비워짐
+        line = session.get(Line, "L1")
+        assert line.status == "normal"
+    finally:
+        session.close()
+
+    # ABORT(진행 중이던 로봇) + HOME(AMR 복귀) 두 건이 발행됐는지 확인
+    actions = [payload["action"] for _, payload in published]
+    assert "ABORT" in actions
+    assert "HOME" in actions
+
+
+def test_sufficient_verdict_without_active_event_just_corrects_line():
+    _ensure_seeded()
+
+    with TestClient(app) as client:
+        response = client.put("/api/lines/L1/stock", json={"verdict": "sufficient", "by": "관리자"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "normal"
+    assert data["currentQty"] > data["threshold"] * 2.5
+
+
+def test_override_returns_404_for_unknown_line():
+    with TestClient(app) as client:
+        response = client.put("/api/lines/L-unknown/stock", json={"verdict": "shortage", "by": "관리자"})
+
+    assert response.status_code == 404

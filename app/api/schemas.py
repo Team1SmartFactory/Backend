@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, PlainSerializer
 from pydantic.alias_generators import to_camel
@@ -88,3 +88,14 @@ class ApproveRequest(CamelModel):
     """
 
     approved_by: str
+
+
+class LineStockOverrideRequest(CamelModel):
+    """PUT /api/lines/{id}/stock 요청 body.
+
+    관리자가 카메라로 직접 확인한 라인 현황. 프론트 docs/API.md §2·§7.3 기준.
+    `by`는 ApproveRequest.approved_by와 마찬가지로, 인증 도입 전까지는 고정 문자열 "관리자"가 온다.
+    """
+
+    verdict: Literal["shortage", "sufficient"]
+    by: str

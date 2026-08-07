@@ -21,23 +21,28 @@
 
 ---
 
-## 2. REST API — 지금 당장 구현해야 하는 것 (3개)
+## 2. REST API — 지금 당장 구현해야 하는 것 (4개)
 
-프론트가 이미 이 3개만 구현되면 `VITE_USE_MOCK=false`로 바로 붙습니다.
+프론트가 이미 이 4개만 구현되면 `VITE_USE_MOCK=false`로 바로 붙습니다.
 
 > 🔄 **정정**: 예전엔 "나머지는 프론트에 대응 코드 없음"이라고 했는데, `/cameras`·`/settings/permissions`·`/lines/{id}/inventory-history` **셋은 프론트 구현이 이미 끝나 있음** — 9장 참고. `/lines`, `/robots`, `/jobs`, `/events`, `/layout`, `/state`는 여전히 대응 코드 없음(폐기 유지) — 8장 참고.
+>
+> 🆕 **이슈 #25**: 프론트가 관리자 카메라 수동 판정 기능(`PUT /lines/{id}/stock`)을 추가하면서 3개 → 4개로 늘어남. 구현 완료 — `app/api/rest.py`.
 
 | # | 기능 | Method | Path | Request | Response |
 |---|---|---|---|---|---|
 | 1 | 초기 스냅샷 | GET | `/api/snapshot` | — | `Snapshot` |
 | 2 | 보충 승인 | POST | `/api/shortage-events/{id}/approve` | `{ "approvedBy": string }` | `ShortageEvent` |
 | 3 | 보충 반려 | POST | `/api/shortage-events/{id}/reject` | — | `ShortageEvent` |
+| 4 | 현황 직접 지정 | PUT | `/api/lines/{id}/stock` | `{ "verdict": "shortage" \| "sufficient", "by": string }` | `Line` |
 
 **백엔드가 해야 할 일**
 - `GET /snapshot`: 현재 전체 라인·로봇·부족 이벤트를 한 번에 반환. **화면 첫 진입은 이 응답만으로 전 탭이 채워져야 함.**
 - `POST .../approve`: 상태를 `dispatched`로 전이, `approvedBy`/`approvedAt` 기록, 보관소 OMX-F에 보충 지시(MQTT `PICK_LOAD`) 발행.
-- `POST .../reject`: 상태를 `rejected`로 전이. **재감지 쿨다운 60초(1분)로 확정** — 반려 후 1분간은 같은 라인/부품에 대해 새 `pending_approval`을 생성하지 않음.
-- 승인/반려 결과는 **응답 Body + WebSocket `line.shortage` 브로드캐스트 둘 다** 해야 함 (응답=요청한 화면용, 브로드캐스트=다른 관리자 화면 동기화용). ✅ 프론트 재확인 완료 — 반영됨
+- `POST .../reject`: 상태를 `rejected`로 전이. **재감지 쿨다운 60초(1분)로 확정** — 반려 후 1분간은 같은 라인/부품에 대해 새 `pending_approval`을 생성하지 않음. 🆕 **라인 `currentQty`도 정상 구간으로 보정한다** — 프론트 `statusTone.ts`는 라인 색을 `currentQty` vs `threshold`로만 정하므로, 값을 안 고치면 반려 후에도 라인이 계속 "부족" 색으로 남는다.
+- 🆕 `PUT .../stock`: `verdict: "shortage"` → 승인 절차 없이 바로 `dispatched` 이벤트를 만들고 보충 지시 발행(지시한 사람이 곧 승인권자). 이미 진행 중인 건이 있으면 409. `verdict: "sufficient"` → 진행 중인 이벤트를 `rejected`로 닫고 로봇 동작을 중단·복귀(`ABORT`+`AMR HOME`)시킨 뒤 라인을 정상 구간으로 보정.
+  - ⚠️ **`requiredQty`/`partName` 산출 근거 미확정** (이슈 #25 3번) — 지금은 `registry.yaml`의 `partId`/`capacity`를 임시로 그대로 씀. 실제 감지 파이프라인이 붙기 전까지 이 값을 신뢰하지 말 것.
+- 승인/반려/현황 지정 결과는 **응답 Body + WebSocket 브로드캐스트 둘 다** 해야 함 (응답=요청한 화면용, 브로드캐스트=다른 관리자 화면 동기화용). ✅ 프론트 재확인 완료 — 반영됨. (`line.shortage` + 라인 값이 바뀌었으면 `line.inventory`, 로봇이 멈췄으면 이후 실제 STATUS 수신 시 `robot.status`)
 - ⚠️ **`line.inventory`는 `/snapshot`에 이미 존재하는 라인에 대해서만 보내야 함.** 프론트는 스냅샷으로 라인 캐시를 만든 뒤 `LineUpdate`(부분 필드: `lineId`/`currentQty`/`status`/`updatedAt`)로 갱신만 하는 구조라, 스냅샷에 없던 라인을 `line.inventory`로 먼저 등장시키면 `name`/`position`이 빠진 채로 캐시가 생성됨. **새 라인 추가는 반드시 `/snapshot` 쪽(라인 레지스트리) 갱신이 먼저** — WS로 새 라인을 "즉석 생성"하면 안 됨.
 
 ---
@@ -141,7 +146,9 @@
 | 2 | `dispatched` | `POST .../approve` | 보관소 OMX-F → Beagle 적재 |
 | 3 | `in_transit` | 적재 완료 | Beagle이 라인으로 이동 |
 | 4 | `completed` | 라인 OMX-F 하역 완료 | 라인 `status`를 `normal`로 복귀 |
-| — | `rejected` | `POST .../reject` | 없음 (쿨다운 후 재감지) |
+| — | `rejected` | `POST .../reject` | 없음. 라인 `currentQty`를 정상 구간으로 보정 후 쿨다운 |
+| — | `dispatched` | `PUT /lines/{id}/stock` `verdict=shortage` | 1번을 건너뛰고 바로 2번부터 시작 |
+| — | `rejected` | `PUT /lines/{id}/stock` `verdict=sufficient` | 진행 중이던 작업 중단(`ABORT`), 로봇 복귀(`AMR HOME`) |
 
 각 단계마다 `line.shortage` 브로드캐스트 필수. **자동 동작 모드**: 설정에서 "관리자 승인 필수"를 끄면 프론트가 `pending_approval` 건을 즉시 `approve`로 자동 호출(`useAutoApproval`) — **백엔드는 별도 분기 불필요.**
 
