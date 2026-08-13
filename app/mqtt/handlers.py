@@ -10,6 +10,9 @@ job 진행에 따른 line.shortage + Line.status 변화에 따른 line.inventory
 아무것도 브로드캐스트할 게 없으면 빈 리스트를 반환한다.
 """
 
+import uuid
+from datetime import datetime, timezone
+
 from app.api.schemas import LineUpdateOut, ShortageEventOut
 from app.contracts.enums import RobotState
 from app.contracts.messages import Inventory, Status, Telemetry
@@ -18,11 +21,12 @@ from app.core.registry import registry
 from app.core.time import to_iso_z
 from app.mqtt.mapping import area_ratio_to_percent, meters_to_relative, status_to_robot_state
 from app.store.db import get_session
-from app.store.models import InventoryHistoryRecord, Line, Robot, ShortageEvent
+from app.store.models import ACTIVE_EVENT_STATUSES, InventoryHistoryRecord, Line, Robot, ShortageEvent
 
 
 def handle_inventory(inventory: Inventory) -> list[dict]:
-    """INVENTORY 수신 처리. line.inventory 브로드캐스트 페이로드를 반환.
+    """INVENTORY 수신 처리. line.inventory (+ 감지되면 line.shortage) 브로드캐스트
+    페이로드를 반환.
 
     스냅샷(DB)에 없는 라인은 브로드캐스트하지 않는다 — 프론트가 부분 데이터
     (LineUpdate)만으로 라인을 새로 만들면 name/position이 빠진 캐시가 생긴다
@@ -32,6 +36,9 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
     GET /lines/{id}/inventory-history가 "재접속 시 과거분 채우기" 용도로 이 값을 쓴다.
     반려/현황 직접 지정 같은 수동 보정은 여기 안 남는다 — WS로 바로 브로드캐스트되고
     프론트가 실시간으로 그래프에 이어 붙이므로 이력 테이블까지 이중으로 쌓을 필요가 없다.
+
+    갱신된 currentQty가 threshold 이하면 승인 대기 이벤트를 자동 생성한다(이슈 #31) —
+    이게 없으면 "카메라 감지 -> 승인 팝업" 시나리오의 첫 단계가 아예 안 돈다.
     """
     session = get_session()
     try:
@@ -44,9 +51,63 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
         session.add(InventoryHistoryRecord(line_id=line.id, qty=line.current_qty, at=inventory.timestamp))
         session.commit()
 
-        return [_line_message(line)]
+        messages = [_line_message(line)]
+
+        new_event = _maybe_create_shortage_event(session, line, inventory)
+        if new_event is not None:
+            messages.append(_shortage_event_message(new_event))
+
+        return messages
     finally:
         session.close()
+
+
+def _maybe_create_shortage_event(session, line: Line, inventory: Inventory) -> ShortageEvent | None:
+    """currentQty가 threshold 이하이고 아래 조건을 모두 만족하면 pending_approval
+    이벤트를 자동 생성한다:
+      - 그 라인에 이미 진행 중인 이벤트가 없을 것 (라인당 활성 이벤트 1개 제약 —
+        app/api/rest.py의 PUT /lines/{id}/stock과 동일 불변식, ACTIVE_EVENT_STATUSES)
+      - cooldown_until이 아직 안 지났으면 생성 안 함 (반려/현황지정 직후 쿨다운 —
+        이 필드가 이슈 #25/#27부터 있었지만 지금까지 아무도 읽지 않던 것을 여기서 처음 씀)
+    """
+    if line.current_qty > line.threshold:
+        return None
+
+    if line.cooldown_until is not None and _as_utc(line.cooldown_until) > inventory.timestamp:
+        return None
+
+    active = (
+        session.query(ShortageEvent)
+        .filter(ShortageEvent.line_id == line.id, ShortageEvent.status.in_(ACTIVE_EVENT_STATUSES))
+        .first()
+    )
+    if active is not None:
+        return None
+
+    line_config = registry.get_line(line.id)
+    if line_config is None:
+        return None
+
+    event = ShortageEvent(
+        id=str(uuid.uuid4()),
+        line_id=line.id,
+        detected_at=inventory.timestamp,
+        status="pending_approval",
+        # TODO(이슈 #25와 동일 미결): partName/requiredQty 산출 근거("박스 교체 로직")
+        # 미확정 — 임시로 registry의 partId/capacity를 그대로 쓴다.
+        part_name=line_config.partId,
+        required_qty=line_config.capacity,
+    )
+    session.add(event)
+    session.commit()
+    return event
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite는 timezone-aware 컬럼도 naive datetime으로 돌려줄 때가 있다 —
+    비교 전에 항상 UTC로 맞춘다 (tests/test_shortage_events_api.py에서 이미
+    같은 이유로 쓰던 패턴)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def handle_status(status: Status) -> list[dict]:

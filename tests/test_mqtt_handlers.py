@@ -1,11 +1,11 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.contracts.messages import Inventory, Status, Telemetry
 from app.core.orchestrator import start_job
 from app.mqtt.handlers import handle_inventory, handle_online_status, handle_status, handle_telemetry
 from app.store.db import get_session, init_db
-from app.store.models import InventoryHistoryRecord, ShortageEvent
+from app.store.models import InventoryHistoryRecord, Line, ShortageEvent
 from app.store.seed import seed_from_registry
 
 
@@ -18,33 +18,110 @@ def _ensure_seeded() -> None:
         session.close()
 
 
+def _make_inventory(area_ratio: float, line_id: str = "line-a", **overrides) -> Inventory:
+    fields = {
+        "lineId": line_id,
+        "partId": "P-001",
+        "areaRatio": area_ratio,
+        "thresholdRatio": 0.05,
+        "qtyEstimate": 3,
+        "status": "LOW" if area_ratio <= 0.05 else "OK",
+        "source": "CV_AREA",
+        "cameraId": "cam-line-a-ceil",
+        "timestamp": datetime.now(timezone.utc),
+    }
+    fields.update(overrides)
+    return Inventory(**fields)
+
+
 def test_handle_inventory_updates_line_and_returns_payload():
+    """임계치 위 값이면 line.inventory만 반환한다 (자동 감지 안 됨 — 그건 별도 테스트)."""
     _ensure_seeded()
-    inventory = Inventory(
-        lineId="line-a",
-        partId="P-001",
-        areaRatio=0.04,
-        thresholdRatio=0.05,
-        qtyEstimate=3,
-        status="LOW",
-        source="CV_AREA",
-        cameraId="cam-line-a-ceil",
-        timestamp=datetime.now(timezone.utc),
-    )
+    inventory = _make_inventory(area_ratio=0.20)
 
     messages = handle_inventory(inventory)
 
     assert len(messages) == 1
     assert messages[0]["type"] == "line.inventory"
     assert messages[0]["payload"]["lineId"] == "line-a"
-    assert messages[0]["payload"]["currentQty"] == 4.0
+    assert messages[0]["payload"]["currentQty"] == 20.0
     assert messages[0]["payload"]["updatedAt"].endswith("Z")
 
     session = get_session()
     try:
         records = session.query(InventoryHistoryRecord).filter(InventoryHistoryRecord.line_id == "line-a").all()
         assert len(records) == 1
-        assert records[0].qty == 4.0
+        assert records[0].qty == 20.0
+    finally:
+        session.close()
+
+
+def test_handle_inventory_below_threshold_auto_creates_pending_approval_event():
+    """이슈 #31: 임계치 이하 감지 시 승인 대기 이벤트를 자동 생성 + line.shortage 브로드캐스트."""
+    _ensure_seeded()
+    inventory = _make_inventory(area_ratio=0.04)  # threshold 5.0% 이하
+
+    messages = handle_inventory(inventory)
+
+    types = {m["type"] for m in messages}
+    assert types == {"line.inventory", "line.shortage"}
+
+    shortage_message = next(m for m in messages if m["type"] == "line.shortage")
+    assert shortage_message["payload"]["status"] == "pending_approval"
+    assert shortage_message["payload"]["lineId"] == "line-a"
+
+    session = get_session()
+    try:
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        assert len(events) == 1
+        assert events[0].status == "pending_approval"
+    finally:
+        session.close()
+
+
+def test_handle_inventory_does_not_duplicate_when_event_already_active():
+    _ensure_seeded()
+    session = get_session()
+    session.add(
+        ShortageEvent(
+            id=f"evt-{uuid.uuid4().hex[:8]}",
+            line_id="line-a",
+            detected_at=datetime.now(timezone.utc),
+            status="pending_approval",
+            part_name="M6 볼트 세트",
+            required_qty=47,
+        )
+    )
+    session.commit()
+    session.close()
+
+    messages = handle_inventory(_make_inventory(area_ratio=0.04))
+
+    assert {m["type"] for m in messages} == {"line.inventory"}  # 중복 생성 안 됨
+
+    session = get_session()
+    try:
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        assert len(events) == 1  # 여전히 1건
+    finally:
+        session.close()
+
+
+def test_handle_inventory_respects_cooldown():
+    _ensure_seeded()
+    session = get_session()
+    line = session.get(Line, "line-a")
+    line.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=60)
+    session.commit()
+    session.close()
+
+    messages = handle_inventory(_make_inventory(area_ratio=0.04))
+
+    assert {m["type"] for m in messages} == {"line.inventory"}  # 쿨다운 중이라 생성 안 됨
+
+    session = get_session()
+    try:
+        assert session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").count() == 0
     finally:
         session.close()
 
