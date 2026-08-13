@@ -17,8 +17,8 @@ def test_line_create_and_read():
     session = _session()
     session.add(
         Line(
-            id="L1",
-            name="1라인",
+            id="line-a",
+            name="A라인",
             threshold=20.0,
             current_qty=80.0,
             status="normal",
@@ -29,9 +29,9 @@ def test_line_create_and_read():
     )
     session.commit()
 
-    fetched = session.get(Line, "L1")
+    fetched = session.get(Line, "line-a")
     assert fetched is not None
-    assert fetched.name == "1라인"
+    assert fetched.name == "A라인"
     assert fetched.status == "normal"
 
 
@@ -39,8 +39,8 @@ def test_robot_create_and_read():
     session = _session()
     session.add(
         Line(
-            id="L1",
-            name="1라인",
+            id="line-a",
+            name="A라인",
             threshold=20.0,
             current_qty=80.0,
             status="normal",
@@ -51,12 +51,12 @@ def test_robot_create_and_read():
     )
     session.commit()
 
-    session.add(Robot(id="beagle-01", type="beagle", line_id="L1", state="idle"))
+    session.add(Robot(id="beagle-01", type="beagle", line_id="line-a", state="idle"))
     session.commit()
 
     fetched = session.get(Robot, "beagle-01")
     assert fetched is not None
-    assert fetched.line_id == "L1"
+    assert fetched.line_id == "line-a"
     assert fetched.state == "idle"
 
 
@@ -64,8 +64,8 @@ def test_shortage_event_create_and_read():
     session = _session()
     session.add(
         Line(
-            id="L1",
-            name="1라인",
+            id="line-a",
+            name="A라인",
             threshold=20.0,
             current_qty=10.0,
             status="normal",
@@ -79,7 +79,7 @@ def test_shortage_event_create_and_read():
     session.add(
         ShortageEvent(
             id="evt-001",
-            line_id="L1",
+            line_id="line-a",
             detected_at=datetime.now(timezone.utc),
             status="pending_approval",
             part_name="M6 볼트 세트",

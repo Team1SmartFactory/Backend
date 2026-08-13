@@ -13,9 +13,9 @@ def test_get_snapshot_returns_seeded_lines_and_robots():
     assert set(data.keys()) == {"lines", "robots", "shortageEvents"}
 
     line_ids = {line["id"] for line in data["lines"]}
-    assert {"L1", "L2", "L3"} <= line_ids
+    assert {"line-a", "line-b", "line-c"} <= line_ids
 
-    l1 = next(line for line in data["lines"] if line["id"] == "L1")
+    l1 = next(line for line in data["lines"] if line["id"] == "line-a")
     assert l1["status"] == "normal"
     assert set(l1["position"]) == {"x", "y"}
 

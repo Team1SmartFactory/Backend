@@ -9,7 +9,7 @@ from app.store.models import Line, ShortageEvent
 def _create_event(session, status: str = "dispatched") -> ShortageEvent:
     event = ShortageEvent(
         id=f"evt-{uuid.uuid4().hex[:8]}",
-        line_id="L1",
+        line_id="line-a",
         detected_at=datetime.now(timezone.utc),
         status=status,
         part_name="M6 볼트 세트",
@@ -46,7 +46,7 @@ def test_job_progresses_through_all_steps_and_completes(monkeypatch):
     assert event.current_step == 4  # Beagle 복귀 커맨드까지 발행됨
     step4_command = event.last_command_id
 
-    line = session.get(Line, "L1")
+    line = session.get(Line, "line-a")
     assert line.status == "normal"
 
     # 4단계(복귀) 완료는 이벤트/라인 상태에 더 이상 영향 없음

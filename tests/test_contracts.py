@@ -11,7 +11,7 @@ def test_command_accepts_valid_message():
         robotId="omxf-storage-01",
         role="STORAGE_ARM",
         action="PICK_LOAD",
-        payload={"partId": "P-001", "qty": 10, "lineId": "L1"},
+        payload={"partId": "P-001", "qty": 10, "lineId": "line-a"},
         timestamp="2026-08-03T10:00:00.000Z",
     )
     assert cmd.type == "COMMAND"
@@ -42,14 +42,14 @@ def test_status_rejects_unknown_state():
 
 def test_inventory_accepts_valid_message():
     inv = Inventory(
-        lineId="L1",
+        lineId="line-a",
         partId="P-001",
         areaRatio=0.04,
         thresholdRatio=0.05,
         qtyEstimate=3,
         status="LOW",
         source="CV_AREA",
-        cameraId="cam-L1-ceil",
+        cameraId="cam-line-a-ceil",
         timestamp="2026-08-03T10:00:00.000Z",
     )
     assert inv.status == "LOW"
@@ -59,13 +59,13 @@ def test_inventory_rejects_out_of_range_ratio():
     """areaRatio는 0~1 범위를 벗어나면 거부돼야 한다."""
     with pytest.raises(ValidationError):
         Inventory(
-            lineId="L1",
+            lineId="line-a",
             partId="P-001",
             areaRatio=1.5,
             thresholdRatio=0.05,
             qtyEstimate=3,
             status="LOW",
             source="CV_AREA",
-            cameraId="cam-L1-ceil",
+            cameraId="cam-line-a-ceil",
             timestamp="2026-08-03T10:00:00.000Z",
         )

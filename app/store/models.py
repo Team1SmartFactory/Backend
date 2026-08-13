@@ -23,7 +23,7 @@ class Line(Base):
 
     __tablename__ = "lines"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # 예: "L1"
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # 예: "line-a"
     name: Mapped[str] = mapped_column(String)
     threshold: Mapped[float] = mapped_column(Float)  # 부족 판정 임계치 (%)
     current_qty: Mapped[float] = mapped_column(Float, default=0.0)  # 면적 비율 (%)
