@@ -51,6 +51,11 @@ class Robot(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
+# "아직 끝나지 않은" ShortageEvent 상태. 라인당 동시에 하나만 진행되어야 한다
+# (app/api/rest.py의 수동 지정, app/mqtt/handlers.py의 자동 감지 둘 다 이 불변식을 지킨다).
+ACTIVE_EVENT_STATUSES = ("pending_approval", "dispatched", "in_transit")
+
+
 class ShortageEvent(Base):
     """부족 이벤트. API_LIST.md 3.3 ShortageEvent 기준."""
 

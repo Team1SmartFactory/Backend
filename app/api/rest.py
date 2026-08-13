@@ -24,6 +24,7 @@ from app.core.orchestrator import cancel_job, start_job
 from app.core.registry import registry
 from app.store.db import get_session
 from app.store.models import (
+    ACTIVE_EVENT_STATUSES,
     DetectionFeedbackRecord,
     InventoryHistoryRecord,
     Line,
@@ -40,9 +41,6 @@ REJECT_COOLDOWN_SECONDS = 60
 # 관리자가 'sufficient'로 판정했을 때 라인을 되돌릴 재고 비율. 임계치의 3배 =
 # statusTone.ts의 '정상'(good) 구간 진입 (프론트 docs/API.md §2 목 시뮬레이터 관례 그대로 따름).
 SUFFICIENT_QTY_MULTIPLIER = 3.0
-
-# "아직 끝나지 않은" ShortageEvent 상태. 라인당 동시에 하나만 진행되어야 한다.
-ACTIVE_EVENT_STATUSES = ("pending_approval", "dispatched", "in_transit")
 
 # 승인 권한 설정은 브라우저마다 값이 갈리면 안 되는 전역 서버 값이라 행 하나만 둔다.
 PERMISSIONS_SINGLETON_ID = "singleton"
