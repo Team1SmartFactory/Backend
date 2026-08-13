@@ -21,14 +21,14 @@ def _ensure_seeded() -> None:
 def test_handle_inventory_updates_line_and_returns_payload():
     _ensure_seeded()
     inventory = Inventory(
-        lineId="L1",
+        lineId="line-a",
         partId="P-001",
         areaRatio=0.04,
         thresholdRatio=0.05,
         qtyEstimate=3,
         status="LOW",
         source="CV_AREA",
-        cameraId="cam-L1-ceil",
+        cameraId="cam-line-a-ceil",
         timestamp=datetime.now(timezone.utc),
     )
 
@@ -36,13 +36,13 @@ def test_handle_inventory_updates_line_and_returns_payload():
 
     assert len(messages) == 1
     assert messages[0]["type"] == "line.inventory"
-    assert messages[0]["payload"]["lineId"] == "L1"
+    assert messages[0]["payload"]["lineId"] == "line-a"
     assert messages[0]["payload"]["currentQty"] == 4.0
     assert messages[0]["payload"]["updatedAt"].endswith("Z")
 
     session = get_session()
     try:
-        records = session.query(InventoryHistoryRecord).filter(InventoryHistoryRecord.line_id == "L1").all()
+        records = session.query(InventoryHistoryRecord).filter(InventoryHistoryRecord.line_id == "line-a").all()
         assert len(records) == 1
         assert records[0].qty == 4.0
     finally:
@@ -94,7 +94,7 @@ def test_handle_status_done_advances_job_and_broadcasts_shortage_event(monkeypat
     session = get_session()
     event = ShortageEvent(
         id=f"evt-{uuid.uuid4().hex[:8]}",
-        line_id="L1",
+        line_id="line-a",
         detected_at=datetime.now(timezone.utc),
         status="dispatched",
         part_name="M6 볼트 세트",

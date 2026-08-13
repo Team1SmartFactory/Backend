@@ -26,7 +26,7 @@ def _create_pending_event(status: str = "pending_approval") -> str:
         session.add(
             ShortageEvent(
                 id=event_id,
-                line_id="L1",
+                line_id="line-a",
                 detected_at=datetime.now(timezone.utc),
                 status=status,
                 part_name="M6 볼트 세트",
@@ -62,13 +62,13 @@ def test_approve_dispatches_and_publishes_command(monkeypatch):
     topic, payload = published[0]
     assert topic == "robot/omxf-storage-01/cmd"
     assert payload["action"] == "PICK_LOAD"
-    assert payload["payload"]["lineId"] == "L1"
+    assert payload["payload"]["lineId"] == "line-a"
     assert payload["payload"]["qty"] == 47
 
     # Line.status가 restocking으로 바뀌었는지 스냅샷으로 확인
     with TestClient(app) as client:
         snapshot = client.get("/api/snapshot").json()
-    line = next(line for line in snapshot["lines"] if line["id"] == "L1")
+    line = next(line for line in snapshot["lines"] if line["id"] == "line-a")
     assert line["status"] == "restocking"
 
 
@@ -103,7 +103,7 @@ def test_reject_sets_rejected_and_cooldown():
 
     session = get_session()
     try:
-        line = session.get(Line, "L1")
+        line = session.get(Line, "line-a")
         assert line.cooldown_until is not None
         cooldown = line.cooldown_until
         if cooldown.tzinfo is None:  # SQLite가 tzinfo를 보존하지 않는 경우 대비
@@ -124,7 +124,7 @@ def test_reject_corrects_line_qty_to_normal_range():
 
     session = get_session()
     try:
-        line = session.get(Line, "L1")
+        line = session.get(Line, "line-a")
         assert line.current_qty > line.threshold * 2.5  # statusTone.ts의 '정상'(good) 구간
     finally:
         session.close()

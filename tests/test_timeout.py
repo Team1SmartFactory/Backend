@@ -15,7 +15,7 @@ from app.store.models import ShortageEvent
 def _create_event(session, status: str = "dispatched") -> ShortageEvent:
     event = ShortageEvent(
         id=f"evt-{uuid.uuid4().hex[:8]}",
-        line_id="L1",
+        line_id="line-a",
         detected_at=datetime.now(timezone.utc),
         status=status,
         part_name="M6 볼트 세트",

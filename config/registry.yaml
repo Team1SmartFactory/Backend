@@ -3,6 +3,12 @@
 # 실기/시뮬 전환은 이 파일의 simulated 값만 바꾸면 된다 — 코드 수정 없음.
 # layout.bounds: TELEMETRY(x,y 미터) -> 프론트 좌표(0~100 상대값) 변환에 쓰이는
 # 평면도 전체 크기. 물리 레이아웃 확정 전까지는 임시값 (API_LIST.md 12.3 관련 결정 참고).
+#
+# lineId는 프론트 평면도(T1FE/dashboard-frontend/src/features/floorplan/floorPlanLayout.ts)의
+# FLOOR_ZONES와 1:1로 맞춘다 (이슈 #29 — "백엔드를 프론트에 맞춘다" 결정). line-a~f의
+# position(x/y)은 그 파일의 zone.rect 중심을 0~100 상대좌표로 환산한 값 (VIEW 1560x1010 기준).
+# 프론트 도면이 바뀌면 이 값들도 같이 갱신할 것 — 반대로 여기 lineId를 프론트와
+# 무관하게 바꾸면 평면도 클릭이 다시 무반응이 된다.
 
 layout:
   bounds:
@@ -10,70 +16,133 @@ layout:
     height: 25.0
 
 lines:
-  - lineId: L1
-    name: "1라인"
+  - lineId: line-a
+    name: "A라인"
     partId: P-001
     capacity: 50
     thresholdRatio: 0.05
-    x: 8.0
-    y: 4.0
+    x: 19.6
+    y: 29.5
     simulated: false # 실기
-  - lineId: L2
-    name: "2라인"
+  - lineId: line-b
+    name: "B라인"
     partId: P-002
     capacity: 50
     thresholdRatio: 0.05
-    x: 8.0
-    y: 14.0
+    x: 49.5
+    y: 29.5
     simulated: true # 시뮬
-  - lineId: L3
-    name: "3라인"
+  - lineId: line-c
+    name: "C라인"
     partId: P-003
     capacity: 50
     thresholdRatio: 0.05
-    x: 8.0
-    y: 24.0
+    x: 77.9
+    y: 29.5
+    simulated: true # 시뮬
+  - lineId: line-d
+    name: "D라인"
+    partId: P-004
+    capacity: 50
+    thresholdRatio: 0.05
+    x: 19.6
+    y: 62.7
+    simulated: true # 시뮬
+  - lineId: line-e
+    name: "E라인"
+    partId: P-005
+    capacity: 50
+    thresholdRatio: 0.05
+    x: 49.5
+    y: 62.7
+    simulated: true # 시뮬
+  - lineId: line-f
+    name: "F라인"
+    partId: P-006
+    capacity: 50
+    thresholdRatio: 0.05
+    x: 77.9
+    y: 62.7
     simulated: true # 시뮬
 
 robots:
-  # L1 (실기)
+  # line-a (실기)
   - robotId: omxf-storage-01
     role: STORAGE_ARM
-    lineId: L1
+    lineId: line-a
     simulated: false
   - robotId: beagle-01
     role: AMR
-    lineId: L1
+    lineId: line-a
     simulated: false
   - robotId: omxf-line-01
     role: LINE_ARM
-    lineId: L1
+    lineId: line-a
     simulated: false
-  # L2 (시뮬)
+  # line-b (시뮬)
   - robotId: omxf-storage-02
     role: STORAGE_ARM
-    lineId: L2
+    lineId: line-b
     simulated: true
   - robotId: beagle-02
     role: AMR
-    lineId: L2
+    lineId: line-b
     simulated: true
   - robotId: omxf-line-02
     role: LINE_ARM
-    lineId: L2
+    lineId: line-b
     simulated: true
-  # L3 (시뮬)
+  # line-c (시뮬)
   - robotId: omxf-storage-03
     role: STORAGE_ARM
-    lineId: L3
+    lineId: line-c
     simulated: true
   - robotId: beagle-03
     role: AMR
-    lineId: L3
+    lineId: line-c
     simulated: true
   - robotId: omxf-line-03
     role: LINE_ARM
-    lineId: L3
+    lineId: line-c
+    simulated: true
+  # line-d (시뮬)
+  - robotId: omxf-storage-04
+    role: STORAGE_ARM
+    lineId: line-d
+    simulated: true
+  - robotId: beagle-04
+    role: AMR
+    lineId: line-d
+    simulated: true
+  - robotId: omxf-line-04
+    role: LINE_ARM
+    lineId: line-d
+    simulated: true
+  # line-e (시뮬)
+  - robotId: omxf-storage-05
+    role: STORAGE_ARM
+    lineId: line-e
+    simulated: true
+  - robotId: beagle-05
+    role: AMR
+    lineId: line-e
+    simulated: true
+  - robotId: omxf-line-05
+    role: LINE_ARM
+    lineId: line-e
+    simulated: true
+  # line-f (시뮬)
+  - robotId: omxf-storage-06
+    role: STORAGE_ARM
+    lineId: line-f
+    simulated: true
+  - robotId: beagle-06
+    role: AMR
+    lineId: line-f
+    simulated: true
+  - robotId: omxf-line-06
+    role: LINE_ARM
+    lineId: line-f
     simulated: true
 
 # 카메라 (API_LIST.md 9.2, 이슈 #27). streamUrl은 실제 배선 전까지 비워둔다 —
@@ -83,15 +152,27 @@ cameras:
   - cameraId: cam-overview
     scope: overview
     label: "공장 전체 뷰"
-  - cameraId: cam-L1
+  - cameraId: cam-line-a
     scope: line
-    lineId: L1
-    label: "1라인"
-  - cameraId: cam-L2
+    lineId: line-a
+    label: "A라인"
+  - cameraId: cam-line-b
     scope: line
-    lineId: L2
-    label: "2라인"
-  - cameraId: cam-L3
+    lineId: line-b
+    label: "B라인"
+  - cameraId: cam-line-c
     scope: line
-    lineId: L3
-    label: "3라인"
+    lineId: line-c
+    label: "C라인"
+  - cameraId: cam-line-d
+    scope: line
+    lineId: line-d
+    label: "D라인"
+  - cameraId: cam-line-e
+    scope: line
+    lineId: line-e
+    label: "E라인"
+  - cameraId: cam-line-f
+    scope: line
+    lineId: line-f
+    label: "F라인"

@@ -23,15 +23,15 @@ def test_list_cameras_reflects_registry_and_derives_online_from_stream_url():
 
     assert response.status_code == 200
     cameras = response.json()
-    assert len(cameras) == 4  # cam-overview + L1/L2/L3
+    assert len(cameras) == 7  # cam-overview + line-a~line-f
 
     overview = next(c for c in cameras if c["scope"] == "overview")
     assert overview["lineId"] is None
     assert overview["streamUrl"] is None
     assert overview["online"] is False  # streamUrl 없음 -> online false
 
-    line_camera = next(c for c in cameras if c["scope"] == "line" and c["lineId"] == "L1")
-    assert line_camera["label"] == "1라인"
+    line_camera = next(c for c in cameras if c["scope"] == "line" and c["lineId"] == "line-a")
+    assert line_camera["label"] == "A라인"
 
 
 def test_get_permissions_returns_default_when_unset():
@@ -71,14 +71,14 @@ def test_inventory_history_returns_oldest_to_newest_capped_at_30():
         base = datetime.now(timezone.utc)
         for i in range(35):
             session.add(
-                InventoryHistoryRecord(line_id="L1", qty=float(i), at=base + timedelta(minutes=i))
+                InventoryHistoryRecord(line_id="line-a", qty=float(i), at=base + timedelta(minutes=i))
             )
         session.commit()
     finally:
         session.close()
 
     with TestClient(app) as client:
-        response = client.get("/api/lines/L1/inventory-history")
+        response = client.get("/api/lines/line-a/inventory-history")
 
     assert response.status_code == 200
     points = response.json()
@@ -103,7 +103,7 @@ def test_detection_feedback_creates_record():
         response = client.post(
             "/api/detection-feedback",
             json={
-                "lineId": "L1",
+                "lineId": "line-a",
                 "detected": "shortage",
                 "corrected": "sufficient",
                 "source": "reject",
@@ -113,7 +113,7 @@ def test_detection_feedback_creates_record():
 
     assert response.status_code == 200
     data = response.json()
-    assert data["lineId"] == "L1"
+    assert data["lineId"] == "line-a"
     assert data["detected"] == "shortage"
     assert data["corrected"] == "sufficient"
     assert data["shortageEventId"] is None
@@ -128,7 +128,7 @@ def test_detection_feedback_with_shortage_event_id():
         session.add(
             ShortageEvent(
                 id="evt-fb-1",
-                line_id="L1",
+                line_id="line-a",
                 detected_at=datetime.now(timezone.utc),
                 status="pending_approval",
                 part_name="M6 볼트 세트",
@@ -143,7 +143,7 @@ def test_detection_feedback_with_shortage_event_id():
         response = client.post(
             "/api/detection-feedback",
             json={
-                "lineId": "L1",
+                "lineId": "line-a",
                 "detected": "shortage",
                 "corrected": "shortage",
                 "source": "approve",
@@ -179,7 +179,7 @@ def test_detection_feedback_returns_404_for_unknown_shortage_event():
         response = client.post(
             "/api/detection-feedback",
             json={
-                "lineId": "L1",
+                "lineId": "line-a",
                 "detected": "shortage",
                 "corrected": "shortage",
                 "source": "approve",
