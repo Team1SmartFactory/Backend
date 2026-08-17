@@ -1,6 +1,7 @@
 import pytest
 
 from app.core import orchestrator
+from app.mqtt.client import mqtt_client
 from app.store.db import engine, get_session
 from app.store.models import Base
 from app.store.seed import seed_from_registry
@@ -27,5 +28,14 @@ def _fresh_db():
     # 등록해둔 루프가 그 테스트 종료 후 닫히는데, 리셋 안 하면 다음 테스트가 그 죽은
     # 루프를 참조하다 "Event loop is closed"로 죽는다.
     orchestrator._loop = None
+    # 타임아웃 워치독 마감시각 dict도 전역 상태 — 이전 테스트의 command_id가 남아있으면
+    # reset_timeout_watch가 엉뚱하게 "감시 중"으로 착각할 수 있다.
+    orchestrator._deadlines.clear()
+
+    # 실브로커 없이 도는 테스트 환경에서는 mqtt_client.is_connected가 항상 False라
+    # (CONNECTION_PLAN.md Phase 1-8의 "미연결 시 즉시 실패" 가드에 전부 걸려버림),
+    # 기본을 연결됨으로 둔다. 그 가드 자체를 검증하는 테스트는 개별적으로
+    # monkeypatch.setattr(mqtt_client, "_connected", False)로 되돌려 쓴다.
+    mqtt_client._connected = True
 
     yield
