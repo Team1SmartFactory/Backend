@@ -72,6 +72,26 @@ def test_approve_dispatches_and_publishes_command(monkeypatch):
     assert line["status"] == "restocking"
 
 
+def test_approve_keeps_line_normal_when_broker_disconnected(monkeypatch):
+    """CONNECTION_PLAN.md Phase 1-8 회귀 테스트: is_connected 가드로 start_job이 즉시
+    실패하면(event.status -> rejected) line.status는 restocking으로 전이시키지 않는다."""
+    from app.mqtt.client import mqtt_client
+
+    event_id = _create_pending_event()
+    monkeypatch.setattr(mqtt_client, "_connected", False)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/shortage-events/{event_id}/approve", json={"approvedBy": "관리자"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+
+    with TestClient(app) as client:
+        snapshot = client.get("/api/snapshot").json()
+    line = next(line for line in snapshot["lines"] if line["id"] == "line-a")
+    assert line["status"] != "restocking"
+
+
 def test_approve_returns_409_when_already_dispatched(monkeypatch):
     monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
     event_id = _create_pending_event(status="dispatched")
