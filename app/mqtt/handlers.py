@@ -10,18 +10,21 @@ job 진행에 따른 line.shortage + Line.status 변화에 따른 line.inventory
 아무것도 브로드캐스트할 게 없으면 빈 리스트를 반환한다.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from app.api.schemas import LineUpdateOut, ShortageEventOut
 from app.contracts.enums import RobotState
 from app.contracts.messages import Inventory, Status, Telemetry
-from app.core.orchestrator import advance_job, fail_job
+from app.core.orchestrator import advance_job, fail_job, reset_timeout_watch, timeout_for_step
 from app.core.registry import registry
 from app.core.time import to_iso_z
 from app.mqtt.mapping import area_ratio_to_percent, meters_to_relative, status_to_robot_state
 from app.store.db import get_session
 from app.store.models import ACTIVE_EVENT_STATUSES, InventoryHistoryRecord, Line, Robot, ShortageEvent
+
+logger = logging.getLogger(__name__)
 
 
 def handle_inventory(inventory: Inventory) -> list[dict]:
@@ -44,6 +47,7 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
     try:
         line = session.get(Line, inventory.lineId)
         if line is None:
+            logger.warning("등록되지 않은 lineId의 INVENTORY 수신, 무시: %s", inventory.lineId)
             return []
 
         line.current_qty = area_ratio_to_percent(inventory.areaRatio)
@@ -142,6 +146,13 @@ def handle_status(status: Status) -> list[dict]:
                     advance_job(session, event, status.commandId)
                 elif status.state == RobotState.FAILED:
                     fail_job(session, event, status.commandId)
+                elif status.state == RobotState.RUNNING and event.last_command_id == status.commandId:
+                    # COMMAND_SCHEMA.md §7.1 keepalive 규약: RUNNING이 오는 한 타임아웃을
+                    # 재장전한다. 이벤트가 이미 dispatched/in_transit이 아니거나(예: 취소돼
+                    # current_step이 None) 타임아웃 값을 못 찾으면 아무 것도 안 한다.
+                    timeout_sec = timeout_for_step(event)
+                    if timeout_sec is not None:
+                        reset_timeout_watch(status.commandId, timeout_sec)
 
                 if event.status != before_event_status:
                     messages.append(_shortage_event_message(event))
@@ -193,6 +204,41 @@ def handle_online_status(robot_id: str, online: bool) -> list[dict]:
         robot.state = "offline"
         session.commit()
         return [_robot_status_payload(robot)]
+    finally:
+        session.close()
+
+
+def handle_bridge_online(online: bool, robot_ids: list[str]) -> list[dict]:
+    """bridge/online (COMMAND_SCHEMA.md §9a, 이슈 #34) 수신 처리.
+
+    브리지 프로세스 전체의 생사 신호 — 로봇 개별 LWT(robot/{id}/online)와 달리
+    브리지가 관리하는 robotIds 전체를 한 번에 전이시킨다. 브리지 하나가 죽었는데
+    거기 매달린 로봇들이 화면에 "이동 중"으로 영구 고착되는 걸 막는다
+    (CONNECTION_PLAN.md J1).
+
+    online:false -> robotIds 전체 offline. online:true -> 그중 offline이던
+    것만 idle로 복귀시킨다(그 외 상태는 그대로 둔다 — 실제로 하던 일이 있었다면
+    로봇 자신이 곧이어 STATUS로 진짜 상태를 보낼 것이므로).
+    """
+    if not robot_ids:
+        return []
+
+    session = get_session()
+    try:
+        messages = []
+        for robot_id in robot_ids:
+            robot = session.get(Robot, robot_id)
+            if robot is None:
+                continue
+            if not online and robot.state != "offline":
+                robot.state = "offline"
+                messages.append(_robot_status_payload(robot))
+            elif online and robot.state == "offline":
+                robot.state = "idle"
+                messages.append(_robot_status_payload(robot))
+        if messages:
+            session.commit()
+        return messages
     finally:
         session.close()
 

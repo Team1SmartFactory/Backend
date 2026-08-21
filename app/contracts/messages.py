@@ -1,12 +1,11 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.contracts.enums import (
     ApprovalDecision,
     CommandAction,
-    ErrorCode,
     InventorySource,
     InventoryStatus,
     JobState,
@@ -19,10 +18,20 @@ from app.contracts.enums import (
 
 
 class MessageBase(BaseModel):
-    """모든 MQTT 메시지가 공유하는 공통 봉투. COMMAND_SCHEMA.md 1장."""
+    """모든 MQTT 메시지가 공유하는 공통 봉투. COMMAND_SCHEMA.md §1 (v2 개정)."""
 
     timestamp: datetime
     schemaVersion: Literal[2] = 2
+
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_must_be_aware(cls, v: datetime) -> datetime:
+        """COMMAND_SCHEMA.md §1: UTC/'Z' 명시가 계약이라 naive(타임존 없는)
+        timestamp는 거부한다. 이 예외는 app/mqtt/subscriber.py의 try/except가
+        잡아 로그 후 그 메시지만 버리므로, 수신 스레드가 죽지 않는다."""
+        if v.tzinfo is None:
+            raise ValueError("timestamp에 타임존 정보가 없습니다 (naive datetime 금지, UTC 'Z' 필수)")
+        return v
 
 
 class Command(MessageBase):
@@ -44,10 +53,16 @@ class Command(MessageBase):
 
 
 class ErrorDetail(BaseModel):
-    """STATUS.payload.error. COMMAND_SCHEMA.md 4장."""
+    """STATUS.payload.error. COMMAND_SCHEMA.md §5 (v2 개정).
 
-    code: ErrorCode
+    code는 자유 문자열 — 표준 5종(app.contracts.enums.ErrorCode)은 권장이지
+    강제가 아니다. 로봇별 특화 에러는 detailCode로 흡수한다(BE는 저장·로그만
+    하고 해석하지 않음).
+    """
+
+    code: str
     message: str
+    detailCode: str | None = None
 
 
 class StatusPayload(BaseModel):

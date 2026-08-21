@@ -141,9 +141,12 @@ async def approve_shortage_event(
 
     start_job(db, event)  # 1단계(PICK_LOAD) 발행. 이후 진행은 app/core/orchestrator.py가 담당.
 
-    # Line.status는 진행 중인 ShortageEvent 여부로 판정 (API_LIST.md 7장) — dispatched 전이 시 restocking으로.
+    # Line.status는 진행 중인 ShortageEvent 여부로 판정 (API_LIST.md 7장) — dispatched 전이 시
+    # restocking으로. start_job이 MQTT 미연결 등으로 즉시 실패하면(CONNECTION_PLAN.md
+    # Phase 1-8) event.status가 이미 rejected로 바뀌어 있으므로, 그 경우 라인은 건드리지
+    # 않는다 — 잡히지도 않은 작업 때문에 라인이 restocking에 고착되는 걸 막는다.
     line = db.get(Line, event.line_id)
-    if line is not None:
+    if line is not None and event.status == "dispatched":
         line.status = "restocking"
         db.commit()
         await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
@@ -226,10 +229,13 @@ async def override_line_stock(
             approved_at=now,
         )
         db.add(event)
-        line.status = "restocking"
         db.commit()
 
-        start_job(db, event)
+        start_job(db, event)  # MQTT 미연결 등으로 즉시 실패하면 event.status가 rejected로 바뀐다.
+
+        if event.status == "dispatched":
+            line.status = "restocking"
+            db.commit()
 
         await hub.broadcast({"type": "line.shortage", "payload": _shortage_event_out(event).model_dump(by_alias=True)})
         await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})

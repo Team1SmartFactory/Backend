@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.rest import router as api_router
 from app.core.config import settings
-from app.core.orchestrator import set_event_loop
+from app.core.orchestrator import set_event_loop, sweep_stale_active_events
 from app.mqtt.client import mqtt_client
 from app.mqtt.subscriber import setup_subscriptions
 from app.store.db import get_session, init_db
@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     session = get_session()
     try:
         seed_from_registry(session)
+        sweep_stale_active_events(session)  # CONNECTION_PLAN.md Phase 1-7 — 재시작 고착 방지
     finally:
         session.close()
 

@@ -71,6 +71,32 @@ def test_shortage_verdict_creates_dispatched_event_and_publishes_pick_load(monke
     assert payload["action"] == "PICK_LOAD"
 
 
+def test_shortage_verdict_keeps_line_normal_when_broker_disconnected(monkeypatch):
+    """CONNECTION_PLAN.md Phase 1-8 회귀 테스트: is_connected 가드로 start_job이 즉시
+    실패하면(event.status -> rejected) line.status는 restocking으로 전이시키지 않는다
+    (실제 라이브 테스트로 발견한 버그 — 커밋 전 라인이 restocking에 고착됐었다)."""
+    from app.mqtt.client import mqtt_client
+
+    _ensure_seeded()
+    monkeypatch.setattr(mqtt_client, "_connected", False)
+
+    with TestClient(app) as client:
+        response = client.put("/api/lines/line-a/stock", json={"verdict": "shortage", "by": "관리자"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == "line-a"
+    assert data["status"] != "restocking"
+
+    session = get_session()
+    try:
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        assert len(events) == 1
+        assert events[0].status == "rejected"
+    finally:
+        session.close()
+
+
 def test_shortage_verdict_returns_409_when_already_in_progress(monkeypatch):
     monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
     _create_event(status="dispatched")
@@ -89,18 +115,22 @@ def test_sufficient_verdict_closes_active_event_and_corrects_line(monkeypatch):
     )
     event_id = _create_event(status="dispatched")
 
-    session = get_session()
-    try:
-        # dispatched 상태를 만들면서 진행 중이던 커맨드(PICK_LOAD)가 있었던 것처럼 세팅
-        from app.core.orchestrator import start_job
-
-        event = session.get(ShortageEvent, event_id)
-        start_job(session, event)
-    finally:
-        session.close()
-    published.clear()  # start_job이 발행한 PICK_LOAD는 이 테스트의 관심사가 아님
-
+    # start_job은 반드시 TestClient 진입(=lifespan 기동, sweep_stale_active_events 실행)
+    # 이후에 호출해야 한다 — 기동 스윕은 "재시작 전부터 진행 중이던(=이 프로세스가
+    # 모르는 워치독을 기다리는) 이벤트"를 전부 실패 처리하므로(CONNECTION_PLAN.md
+    # Phase 1-7), 기동 전에 진행 중 이벤트를 만들면 스윕 대상이 돼 곧바로 rejected로
+    # 바뀌어버린다.
     with TestClient(app) as client:
+        session = get_session()
+        try:
+            from app.core.orchestrator import start_job
+
+            event = session.get(ShortageEvent, event_id)
+            start_job(session, event)
+        finally:
+            session.close()
+        published.clear()  # start_job이 발행한 PICK_LOAD는 이 테스트의 관심사가 아님
+
         response = client.put("/api/lines/line-a/stock", json={"verdict": "sufficient", "by": "관리자"})
 
     assert response.status_code == 200

@@ -1,11 +1,13 @@
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.contracts.messages import Inventory, Status, Telemetry
+from app.core import orchestrator
 from app.core.orchestrator import start_job
-from app.mqtt.handlers import handle_inventory, handle_online_status, handle_status, handle_telemetry
+from app.mqtt.handlers import handle_bridge_online, handle_inventory, handle_online_status, handle_status, handle_telemetry
 from app.store.db import get_session, init_db
-from app.store.models import InventoryHistoryRecord, Line, ShortageEvent
+from app.store.models import InventoryHistoryRecord, Line, Robot, ShortageEvent
 from app.store.seed import seed_from_registry
 
 
@@ -199,6 +201,122 @@ def test_handle_status_done_advances_job_and_broadcasts_shortage_event(monkeypat
 
     shortage_message = next(m for m in messages if m["type"] == "line.shortage")
     assert shortage_message["payload"]["status"] == "in_transit"
+
+
+def test_handle_status_running_resets_timeout_watchdog(monkeypatch):
+    """STATUS(RUNNING)가 진행 중인 job의 마지막 커맨드와 일치하면 워치독을 재장전한다
+    (COMMAND_SCHEMA.md §7.1 keepalive 규약, CONNECTION_PLAN.md C3)."""
+    monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
+    _ensure_seeded()
+
+    session = get_session()
+    event = ShortageEvent(
+        id=f"evt-{uuid.uuid4().hex[:8]}",
+        line_id="line-a",
+        detected_at=datetime.now(timezone.utc),
+        status="dispatched",
+        part_name="M6 볼트 세트",
+        required_qty=47,
+    )
+    session.add(event)
+    session.commit()
+    start_job(session, event)  # step 1 = PICK_LOAD 발행, 워치독 예약
+    command_id = event.last_command_id
+    event_id = event.id
+    session.close()
+
+    # 곧 만료될 것처럼 마감시각을 앞당겨둔다.
+    orchestrator._deadlines[command_id] = 0.0
+
+    status = Status(
+        commandId=command_id,
+        jobId=event_id,
+        robotId="omxf-storage-01",
+        state="RUNNING",
+        timestamp=datetime.now(timezone.utc),
+    )
+    handle_status(status)
+
+    remaining = orchestrator._deadlines[command_id] - time.monotonic()
+    assert remaining > 50  # PICK_LOAD 타임아웃(120s)만큼 재장전됐어야 함
+
+
+def test_handle_status_running_for_stale_command_id_does_not_reset(monkeypatch):
+    """RUNNING의 commandId가 이벤트가 기다리는 마지막 커맨드와 다르면(지각 도착 등)
+    워치독을 건드리지 않는다."""
+    monkeypatch.setattr("app.core.orchestrator.mqtt_client.publish", lambda *a, **k: None)
+    _ensure_seeded()
+
+    session = get_session()
+    event = ShortageEvent(
+        id=f"evt-{uuid.uuid4().hex[:8]}",
+        line_id="line-a",
+        detected_at=datetime.now(timezone.utc),
+        status="dispatched",
+        part_name="M6 볼트 세트",
+        required_qty=47,
+    )
+    session.add(event)
+    session.commit()
+    start_job(session, event)
+    event_id = event.id
+    session.close()
+
+    status = Status(
+        commandId="stale-command-id",
+        jobId=event_id,
+        robotId="omxf-storage-01",
+        state="RUNNING",
+        timestamp=datetime.now(timezone.utc),
+    )
+    handle_status(status)
+
+    assert "stale-command-id" not in orchestrator._deadlines
+
+
+def test_handle_bridge_online_false_marks_managed_robots_offline():
+    """bridge/online:false -> robotIds 전체 offline 전이 (COMMAND_SCHEMA.md §9a)."""
+    _ensure_seeded()
+
+    messages = handle_bridge_online(False, ["beagle-01", "omxf-storage-01"])
+
+    types_and_states = {(m["payload"]["robotId"], m["payload"]["state"]) for m in messages}
+    assert types_and_states == {("beagle-01", "offline"), ("omxf-storage-01", "offline")}
+
+    session = get_session()
+    try:
+        assert session.get(Robot, "beagle-01").state == "offline"
+        assert session.get(Robot, "omxf-storage-01").state == "offline"
+    finally:
+        session.close()
+
+
+def test_handle_bridge_online_true_recovers_offline_robots_to_idle():
+    """bridge/online:true -> 그중 offline이던 로봇만 idle로 복귀. 이미 다른 상태(working
+    등)인 로봇은 건드리지 않는다 — 실제 상태는 로봇 자신의 STATUS가 곧 알려줄 것이므로."""
+    _ensure_seeded()
+    session = get_session()
+    session.get(Robot, "beagle-01").state = "offline"
+    session.get(Robot, "omxf-storage-01").state = "working"
+    session.commit()
+    session.close()
+
+    messages = handle_bridge_online(True, ["beagle-01", "omxf-storage-01"])
+
+    assert len(messages) == 1
+    assert messages[0]["payload"]["robotId"] == "beagle-01"
+    assert messages[0]["payload"]["state"] == "idle"
+
+    session = get_session()
+    try:
+        assert session.get(Robot, "beagle-01").state == "idle"
+        assert session.get(Robot, "omxf-storage-01").state == "working"  # 안 건드림
+    finally:
+        session.close()
+
+
+def test_handle_bridge_online_ignores_empty_robot_ids():
+    assert handle_bridge_online(False, []) == []
 
 
 def test_handle_telemetry_converts_position():
