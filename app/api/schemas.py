@@ -24,8 +24,30 @@ class PositionOut(CamelModel):
     y: float
 
 
+class BinOut(CamelModel):
+    """라인 안의 부품 적재 위치(칸). 이슈 #37 — line-a처럼 칸별로 서로 다른
+    부품을 적재하는 라인에서만 비어있지 않다."""
+
+    id: str
+    line_id: str
+    label: str
+    part_id: str
+    part_name: str
+    capacity: int
+    threshold: float
+    current_qty: float
+    status: str
+    updated_at: UtcDatetime
+
+
 class LineOut(CamelModel):
-    """API_LIST.md 3.2 Line."""
+    """API_LIST.md 3.2 Line.
+
+    bins는 이슈 #37 추가 필드 — 없는 라인은 빈 배열이라 기존 프론트 코드는
+    안 건드려도 그대로 동작한다(옵셔널 취급). status/current_qty는 bins가 있으면
+    그 칸들의 롤업(app/api/rest.py의 _recompute_line_rollup)이라, 대시보드의
+    라인 뱃지 색상은 코드 변경 없이 칸 단위 변화를 그대로 반영한다.
+    """
 
     id: str
     name: str
@@ -34,6 +56,7 @@ class LineOut(CamelModel):
     status: str
     updated_at: UtcDatetime
     position: PositionOut
+    bins: list[BinOut] = []
 
 
 class LineUpdateOut(CamelModel):
@@ -65,6 +88,7 @@ class ShortageEventOut(CamelModel):
 
     id: str
     line_id: str
+    bin_id: str | None = None  # 이슈 #37 — bins가 있는 라인의 이벤트만 채워짐
     detected_at: UtcDatetime
     status: str
     part_name: str

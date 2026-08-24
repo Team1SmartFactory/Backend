@@ -36,6 +36,34 @@ class Line(Base):
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Bin(Base):
+    """라인 안의 부품 적재 위치(칸). 이슈 #37.
+
+    line-a처럼 실물 로봇팔 하나가 닿을 수 있는 칸 여러 개에 서로 다른 부품을
+    적재하는 라인을 위한 세부 단위. bins가 없는 라인(대부분의 시뮬 라인)은
+    지금처럼 Line 자체를 부족 판정 단위로 쓴다 — Bin은 어디까지나 선택적 세분화다.
+
+    Line.current_qty/threshold/status는 그대로 두고(GET /snapshot 등 기존 API·
+    프론트 호환), 이 라인에 bins가 있으면 Line의 그 값들은 bins의 롤업으로
+    자동 계산된다(app/api/rest.py의 _recompute_line_rollup 참고).
+    """
+
+    __tablename__ = "bins"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # 예: "line-a-bin-a" (전역 유니크)
+    line_id: Mapped[str] = mapped_column(String, ForeignKey("lines.id"))
+    label: Mapped[str] = mapped_column(String)  # 물리 칸 이름 — "a"|"b"|"c"|"d" (Hardware bin_a~d와 매칭)
+    part_id: Mapped[str] = mapped_column(String)
+    part_name: Mapped[str] = mapped_column(String)
+    capacity: Mapped[int] = mapped_column(Integer)
+    threshold: Mapped[float] = mapped_column(Float)  # 부족 판정 임계치 (%)
+    current_qty: Mapped[float] = mapped_column(Float, default=0.0)  # 면적 비율 (%)
+    status: Mapped[str] = mapped_column(String, default="normal")  # normal | restocking
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # Line.cooldown_until과 같은 용도 — bin 단위 반려 후 재감지 쿨다운.
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Robot(Base):
     """로봇 현재 상태. API_LIST.md 3.4 RobotStatus 기준."""
 
@@ -63,6 +91,9 @@ class ShortageEvent(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     line_id: Mapped[str] = mapped_column(String, ForeignKey("lines.id"))
+    # bins가 있는 라인(line-a)의 이벤트만 채워진다 — 어느 칸이 부족한지. bins 없는
+    # 라인은 지금처럼 None(라인 단위 이벤트, 이슈 #37 이전과 동일하게 동작).
+    bin_id: Mapped[str | None] = mapped_column(String, ForeignKey("bins.id"), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String)
     # pending_approval | dispatched | in_transit | completed | rejected

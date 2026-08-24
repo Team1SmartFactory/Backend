@@ -40,7 +40,7 @@ from app.core.registry import registry
 from app.core.time import to_iso_z
 from app.mqtt.client import mqtt_client
 from app.store.db import get_session
-from app.store.models import ACTIVE_EVENT_STATUSES
+from app.store.models import ACTIVE_EVENT_STATUSES, Bin
 from app.store.models import Command as CommandRecord
 from app.store.models import Line, ShortageEvent
 
@@ -83,20 +83,35 @@ def _robot_for_role(line_id: str, role: RobotRole) -> str | None:
 
 
 def _build_step(event: ShortageEvent, step: int) -> tuple[str, RobotRole, CommandAction, dict] | None:
-    """step(1~4) -> (robotId, role, action, payload). 필요한 로봇/라인 설정이 없으면 None."""
+    """step(1~4) -> (robotId, role, action, payload). 필요한 로봇/라인 설정이 없으면 None.
+
+    event.bin_id가 있으면(이슈 #37 — line-a처럼 칸별로 부품이 다른 라인) payload의
+    partId는 라인 대표값이 아니라 그 칸의 partId를 쓴다. lineId/로봇 선택은 그대로
+    라인 기준 — 같은 로봇팔(omxf-line-01)이 그 라인의 칸 전부를 담당하고, 실제로
+    어느 칸(bin)에 놓을지는 Hardware가 partId로 판단한다(PART_TO_BIN, MQTT 계약
+    변경 없음).
+    """
     line_config = registry.get_line(event.line_id)
     if line_config is None:
         return None
 
+    if event.bin_id is not None:
+        bin_config = registry.get_bin(event.bin_id)
+        if bin_config is None:
+            return None
+        part_id = bin_config.partId
+    else:
+        part_id = line_config.partId
+
     if step == 1:
         role, action = RobotRole.STORAGE_ARM, CommandAction.PICK_LOAD
-        payload = {"partId": line_config.partId, "qty": event.required_qty, "lineId": event.line_id}
+        payload = {"partId": part_id, "qty": event.required_qty, "lineId": event.line_id}
     elif step == 2:
         role, action = RobotRole.AMR, CommandAction.MOVE_TO
         payload = {"destination": event.line_id}
     elif step == 3:
         role, action = RobotRole.LINE_ARM, CommandAction.UNLOAD_RESUME
-        payload = {"partId": line_config.partId, "qty": event.required_qty, "lineId": event.line_id}
+        payload = {"partId": part_id, "qty": event.required_qty, "lineId": event.line_id}
     elif step == 4:
         role, action = RobotRole.AMR, CommandAction.MOVE_TO
         payload = {"destination": "STORAGE"}
@@ -107,6 +122,27 @@ def _build_step(event: ShortageEvent, step: int) -> tuple[str, RobotRole, Comman
     if robot_id is None:
         return None
     return robot_id, role, action, payload
+
+
+def recompute_line_rollup(db: Session, line_id: str) -> Line | None:
+    """bins가 있는 라인의 Line.status/current_qty를 그 칸들의 롤업으로 재계산한다
+    (이슈 #37). bins가 없는 라인은 아무것도 하지 않고 그대로 반환 — 호출해도
+    안전하다(이슈 #37 이전과 동일하게 동작).
+
+    status: 칸 하나라도 restocking이면 라인도 restocking.
+    current_qty: 칸들 중 최솟값 — 프론트 statusTone.ts가 current_qty vs threshold
+    비교로만 색을 정하므로, 가장 급한 칸 기준으로 라인 뱃지 색이 정해지게 한다.
+    """
+    line = db.get(Line, line_id)
+    if line is None:
+        return None
+    bins = db.query(Bin).filter(Bin.line_id == line_id).all()
+    if not bins:
+        return line
+    line.status = "restocking" if any(b.status == "restocking" for b in bins) else "normal"
+    line.current_qty = min(b.current_qty for b in bins)
+    db.commit()
+    return line
 
 
 def _publish_command(
@@ -262,10 +298,17 @@ def advance_job(db: Session, event: ShortageEvent, completed_command_id: str) ->
     elif step == 3:
         event.status = "completed"
         db.commit()
-        line = db.get(Line, event.line_id)
-        if line is not None:
-            line.status = "normal"
-            db.commit()
+        if event.bin_id is not None:
+            bin_row = db.get(Bin, event.bin_id)
+            if bin_row is not None:
+                bin_row.status = "normal"
+                db.commit()
+            recompute_line_rollup(db, event.line_id)
+        else:
+            line = db.get(Line, event.line_id)
+            if line is not None:
+                line.status = "normal"
+                db.commit()
         _issue_step(db, event, 4)  # Beagle 복귀 — ShortageEvent 상태엔 더 이상 영향 없음
     elif step == 4:
         pass  # 복귀 완료. 할 일 없음

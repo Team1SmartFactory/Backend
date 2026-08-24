@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     ApproveRequest,
+    BinOut,
     CameraOut,
     DetectionFeedbackOut,
     DetectionFeedbackRequest,
@@ -20,11 +21,12 @@ from app.api.schemas import (
     ShortageEventOut,
     SnapshotOut,
 )
-from app.core.orchestrator import cancel_job, start_job
+from app.core.orchestrator import cancel_job, recompute_line_rollup, start_job
 from app.core.registry import registry
 from app.store.db import get_session
 from app.store.models import (
     ACTIVE_EVENT_STATUSES,
+    Bin,
     DetectionFeedbackRecord,
     InventoryHistoryRecord,
     Line,
@@ -66,7 +68,7 @@ def get_snapshot(db: Session = Depends(get_db)) -> SnapshotOut:
     events = db.query(ShortageEvent).all()
 
     return SnapshotOut(
-        lines=[_line_out(line) for line in lines],
+        lines=[_line_out(db, line) for line in lines],
         robots=[
             RobotStatusOut(
                 robot_id=robot.id,
@@ -86,6 +88,7 @@ def _shortage_event_out(event: ShortageEvent) -> ShortageEventOut:
     return ShortageEventOut(
         id=event.id,
         line_id=event.line_id,
+        bin_id=event.bin_id,
         detected_at=event.detected_at,
         status=event.status,
         part_name=event.part_name,
@@ -95,7 +98,23 @@ def _shortage_event_out(event: ShortageEvent) -> ShortageEventOut:
     )
 
 
-def _line_out(line: Line) -> LineOut:
+def _bin_out(bin_row: Bin) -> BinOut:
+    return BinOut(
+        id=bin_row.id,
+        line_id=bin_row.line_id,
+        label=bin_row.label,
+        part_id=bin_row.part_id,
+        part_name=bin_row.part_name,
+        capacity=bin_row.capacity,
+        threshold=bin_row.threshold,
+        current_qty=bin_row.current_qty,
+        status=bin_row.status,
+        updated_at=bin_row.updated_at,
+    )
+
+
+def _line_out(db: Session, line: Line) -> LineOut:
+    bins = db.query(Bin).filter(Bin.line_id == line.id).all()
     return LineOut(
         id=line.id,
         name=line.name,
@@ -104,7 +123,27 @@ def _line_out(line: Line) -> LineOut:
         status=line.status,
         updated_at=line.updated_at,
         position=PositionOut(x=line.position_x, y=line.position_y),
+        bins=[_bin_out(b) for b in bins],
     )
+
+
+def _transition_to_restocking(db: Session, event: ShortageEvent) -> Line | None:
+    """dispatched 전이가 성공했을 때 bin/line 상태를 restocking으로 갱신하고,
+    브로드캐스트에 쓸 Line을 반환한다. event.bin_id 유무로 칸 단위/라인 단위를
+    분기한다(이슈 #37) — approve_shortage_event와 PUT .../bins/{binId}/stock이
+    이 로직을 공유한다."""
+    if event.bin_id is not None:
+        bin_row = db.get(Bin, event.bin_id)
+        if bin_row is not None:
+            bin_row.status = "restocking"
+            db.commit()
+        return recompute_line_rollup(db, event.line_id)
+
+    line = db.get(Line, event.line_id)
+    if line is not None:
+        line.status = "restocking"
+        db.commit()
+    return line
 
 
 def _line_update_out(line: Line) -> LineUpdateOut:
@@ -145,11 +184,12 @@ async def approve_shortage_event(
     # restocking으로. start_job이 MQTT 미연결 등으로 즉시 실패하면(CONNECTION_PLAN.md
     # Phase 1-8) event.status가 이미 rejected로 바뀌어 있으므로, 그 경우 라인은 건드리지
     # 않는다 — 잡히지도 않은 작업 때문에 라인이 restocking에 고착되는 걸 막는다.
-    line = db.get(Line, event.line_id)
-    if line is not None and event.status == "dispatched":
-        line.status = "restocking"
-        db.commit()
-        await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
+    if event.status == "dispatched":
+        line = _transition_to_restocking(db, event)
+        if line is not None:
+            await hub.broadcast(
+                {"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)}
+            )
 
     event_out = _shortage_event_out(event)
     await hub.broadcast({"type": "line.shortage", "payload": event_out.model_dump(by_alias=True)})
@@ -174,11 +214,23 @@ async def reject_shortage_event(event_id: str, db: Session = Depends(get_db)) ->
     event.status = "rejected"
     db.commit()
 
-    line = db.get(Line, event.line_id)
+    # 이슈 #37: bin 단위 이벤트는 그 칸의 currentQty/cooldown을 보정하고 라인은
+    # 롤업으로만 반영한다 — 다른 칸들의 진행 중인 작업에 영향을 주면 안 된다.
+    if event.bin_id is not None:
+        bin_row = db.get(Bin, event.bin_id)
+        if bin_row is not None:
+            bin_row.current_qty = bin_row.threshold * SUFFICIENT_QTY_MULTIPLIER
+            bin_row.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=REJECT_COOLDOWN_SECONDS)
+            db.commit()
+        line = recompute_line_rollup(db, event.line_id)
+    else:
+        line = db.get(Line, event.line_id)
+        if line is not None:
+            line.current_qty = line.threshold * SUFFICIENT_QTY_MULTIPLIER
+            line.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=REJECT_COOLDOWN_SECONDS)
+            db.commit()
+
     if line is not None:
-        line.current_qty = line.threshold * SUFFICIENT_QTY_MULTIPLIER
-        line.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=REJECT_COOLDOWN_SECONDS)
-        db.commit()
         await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
 
     event_out = _shortage_event_out(event)
@@ -199,6 +251,15 @@ async def override_line_stock(
     line = db.get(Line, line_id)
     if line is None:
         raise HTTPException(status_code=404, detail="해당 라인을 찾을 수 없습니다")
+
+    # 이슈 #37: bins가 있는 라인(line-a)은 칸마다 독립적으로 부족할 수 있어서
+    # "라인 전체가 부족/정상"이라는 판정 자체가 모호하다 — PUT .../bins/{binId}/stock을
+    # 쓰게 한다.
+    if registry.get_bins_for_line(line_id):
+        raise HTTPException(
+            status_code=400,
+            detail="이 라인은 칸 단위로 관리됩니다. PUT /lines/{id}/bins/{binId}/stock을 사용하세요",
+        )
 
     active_event = (
         db.query(ShortageEvent)
@@ -239,7 +300,7 @@ async def override_line_stock(
 
         await hub.broadcast({"type": "line.shortage", "payload": _shortage_event_out(event).model_dump(by_alias=True)})
         await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
-        return _line_out(line)
+        return _line_out(db, line)
 
     # verdict == "sufficient"
     if active_event is not None:
@@ -256,7 +317,92 @@ async def override_line_stock(
     db.commit()
 
     await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
-    return _line_out(line)
+    return _line_out(db, line)
+
+
+@router.get("/lines/{line_id}/bins", response_model=list[BinOut])
+def list_bins(line_id: str, db: Session = Depends(get_db)) -> list[BinOut]:
+    """라인 안의 부품 적재 위치(칸) 목록. 이슈 #37. bins가 없는 라인은 빈 배열."""
+    if db.get(Line, line_id) is None:
+        raise HTTPException(status_code=404, detail="해당 라인을 찾을 수 없습니다")
+    bins = db.query(Bin).filter(Bin.line_id == line_id).all()
+    return [_bin_out(b) for b in bins]
+
+
+@router.put("/lines/{line_id}/bins/{bin_id}/stock", response_model=BinOut)
+async def override_bin_stock(
+    line_id: str, bin_id: str, body: LineStockOverrideRequest, db: Session = Depends(get_db)
+) -> BinOut:
+    """관리자가 카메라로 확인한 칸(bin) 현황을 직접 지정. 이슈 #37 — PUT /lines/{id}/stock의
+    칸 단위 버전. 같은 라인의 다른 칸들과 서로 독립적으로 진행된다(활성 이벤트 제약도
+    칸 단위로 검사).
+    """
+    bin_row = db.get(Bin, bin_id)
+    if bin_row is None or bin_row.line_id != line_id:
+        raise HTTPException(status_code=404, detail="해당 칸을 찾을 수 없습니다")
+
+    active_event = (
+        db.query(ShortageEvent)
+        .filter(ShortageEvent.bin_id == bin_id, ShortageEvent.status.in_(ACTIVE_EVENT_STATUSES))
+        .first()
+    )
+
+    if body.verdict == "shortage":
+        if active_event is not None:
+            raise HTTPException(status_code=409, detail="이미 진행 중인 보충 작업이 있습니다")
+
+        bin_config = registry.get_bin(bin_id)
+        if bin_config is None:
+            raise HTTPException(status_code=404, detail="레지스트리에 없는 칸입니다")
+
+        now = datetime.now(timezone.utc)
+        event = ShortageEvent(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            bin_id=bin_id,
+            detected_at=now,
+            status="dispatched",
+            part_name=bin_config.partName,
+            required_qty=bin_config.capacity,
+            approved_by=body.by,
+            approved_at=now,
+        )
+        db.add(event)
+        db.commit()
+
+        start_job(db, event)  # MQTT 미연결 등으로 즉시 실패하면 event.status가 rejected로 바뀐다.
+
+        if event.status == "dispatched":
+            # 세션 identity map 덕에 bin_row는 이 안에서 바뀐 값을 그대로 반영한다
+            # (같은 세션·같은 PK라 db.get(Bin, event.bin_id)가 같은 객체를 반환).
+            _transition_to_restocking(db, event)
+
+        line = recompute_line_rollup(db, line_id)
+        await hub.broadcast({"type": "line.shortage", "payload": _shortage_event_out(event).model_dump(by_alias=True)})
+        if line is not None:
+            await hub.broadcast(
+                {"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)}
+            )
+        return _bin_out(bin_row)
+
+    # verdict == "sufficient"
+    if active_event is not None:
+        active_event.status = "rejected"
+        db.commit()
+        cancel_job(db, active_event)  # 로봇 동작 중단 + 복귀(ABORT/HOME)
+        await hub.broadcast(
+            {"type": "line.shortage", "payload": _shortage_event_out(active_event).model_dump(by_alias=True)}
+        )
+
+    bin_row.current_qty = bin_row.threshold * SUFFICIENT_QTY_MULTIPLIER
+    bin_row.status = "normal"
+    bin_row.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=REJECT_COOLDOWN_SECONDS)
+    db.commit()
+
+    line = recompute_line_rollup(db, line_id)
+    if line is not None:
+        await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
+    return _bin_out(bin_row)
 
 
 @router.get("/cameras", response_model=list[CameraOut])

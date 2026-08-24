@@ -18,7 +18,7 @@ def _ensure_seeded() -> None:
         session.close()
 
 
-def _create_event(status: str, line_id: str = "line-a") -> str:
+def _create_event(status: str, line_id: str = "line-b") -> str:
     _ensure_seeded()
     session = get_session()
     try:
@@ -48,16 +48,16 @@ def test_shortage_verdict_creates_dispatched_event_and_publishes_pick_load(monke
     )
 
     with TestClient(app) as client:
-        response = client.put("/api/lines/line-a/stock", json={"verdict": "shortage", "by": "관리자"})
+        response = client.put("/api/lines/line-b/stock", json={"verdict": "shortage", "by": "관리자"})
 
     assert response.status_code == 200
     data = response.json()
-    assert data["id"] == "line-a"
+    assert data["id"] == "line-b"
     assert data["status"] == "restocking"
 
     session = get_session()
     try:
-        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-b").all()
         assert len(events) == 1
         assert events[0].status == "dispatched"
         assert events[0].approved_by == "관리자"
@@ -67,7 +67,7 @@ def test_shortage_verdict_creates_dispatched_event_and_publishes_pick_load(monke
     # 승인 절차 없이 바로 PICK_LOAD가 발행됐는지 확인
     assert len(published) == 1
     topic, payload = published[0]
-    assert topic == "robot/omxf-storage-01/cmd"
+    assert topic == "robot/omxf-storage-02/cmd"
     assert payload["action"] == "PICK_LOAD"
 
 
@@ -81,16 +81,16 @@ def test_shortage_verdict_keeps_line_normal_when_broker_disconnected(monkeypatch
     monkeypatch.setattr(mqtt_client, "_connected", False)
 
     with TestClient(app) as client:
-        response = client.put("/api/lines/line-a/stock", json={"verdict": "shortage", "by": "관리자"})
+        response = client.put("/api/lines/line-b/stock", json={"verdict": "shortage", "by": "관리자"})
 
     assert response.status_code == 200
     data = response.json()
-    assert data["id"] == "line-a"
+    assert data["id"] == "line-b"
     assert data["status"] != "restocking"
 
     session = get_session()
     try:
-        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-b").all()
         assert len(events) == 1
         assert events[0].status == "rejected"
     finally:
@@ -102,7 +102,7 @@ def test_shortage_verdict_returns_409_when_already_in_progress(monkeypatch):
     _create_event(status="dispatched")
 
     with TestClient(app) as client:
-        response = client.put("/api/lines/line-a/stock", json={"verdict": "shortage", "by": "관리자"})
+        response = client.put("/api/lines/line-b/stock", json={"verdict": "shortage", "by": "관리자"})
 
     assert response.status_code == 409
 
@@ -131,7 +131,7 @@ def test_sufficient_verdict_closes_active_event_and_corrects_line(monkeypatch):
             session.close()
         published.clear()  # start_job이 발행한 PICK_LOAD는 이 테스트의 관심사가 아님
 
-        response = client.put("/api/lines/line-a/stock", json={"verdict": "sufficient", "by": "관리자"})
+        response = client.put("/api/lines/line-b/stock", json={"verdict": "sufficient", "by": "관리자"})
 
     assert response.status_code == 200
     data = response.json()
@@ -143,7 +143,7 @@ def test_sufficient_verdict_closes_active_event_and_corrects_line(monkeypatch):
         event = session.get(ShortageEvent, event_id)
         assert event.status == "rejected"
         assert event.last_command_id is None  # 취소 후 지각 STATUS가 무시되도록 비워짐
-        line = session.get(Line, "line-a")
+        line = session.get(Line, "line-b")
         assert line.status == "normal"
     finally:
         session.close()
@@ -158,7 +158,7 @@ def test_sufficient_verdict_without_active_event_just_corrects_line():
     _ensure_seeded()
 
     with TestClient(app) as client:
-        response = client.put("/api/lines/line-a/stock", json={"verdict": "sufficient", "by": "관리자"})
+        response = client.put("/api/lines/line-b/stock", json={"verdict": "sufficient", "by": "관리자"})
 
     assert response.status_code == 200
     data = response.json()
@@ -171,3 +171,13 @@ def test_override_returns_404_for_unknown_line():
         response = client.put("/api/lines/L-unknown/stock", json={"verdict": "shortage", "by": "관리자"})
 
     assert response.status_code == 404
+
+
+def test_override_returns_400_for_line_with_bins():
+    """이슈 #37: line-a는 bins가 있어서 라인 단위 오버라이드가 모호하다 — 거부돼야 한다."""
+    _ensure_seeded()
+
+    with TestClient(app) as client:
+        response = client.put("/api/lines/line-a/stock", json={"verdict": "shortage", "by": "관리자"})
+
+    assert response.status_code == 400

@@ -20,7 +20,7 @@ def _ensure_seeded() -> None:
         session.close()
 
 
-def _make_inventory(area_ratio: float, line_id: str = "line-a", **overrides) -> Inventory:
+def _make_inventory(area_ratio: float, line_id: str = "line-b", **overrides) -> Inventory:
     fields = {
         "lineId": line_id,
         "partId": "P-001",
@@ -29,7 +29,7 @@ def _make_inventory(area_ratio: float, line_id: str = "line-a", **overrides) -> 
         "qtyEstimate": 3,
         "status": "LOW" if area_ratio <= 0.05 else "OK",
         "source": "CV_AREA",
-        "cameraId": "cam-line-a-ceil",
+        "cameraId": "cam-line-b-ceil",
         "timestamp": datetime.now(timezone.utc),
     }
     fields.update(overrides)
@@ -45,13 +45,13 @@ def test_handle_inventory_updates_line_and_returns_payload():
 
     assert len(messages) == 1
     assert messages[0]["type"] == "line.inventory"
-    assert messages[0]["payload"]["lineId"] == "line-a"
+    assert messages[0]["payload"]["lineId"] == "line-b"
     assert messages[0]["payload"]["currentQty"] == 20.0
     assert messages[0]["payload"]["updatedAt"].endswith("Z")
 
     session = get_session()
     try:
-        records = session.query(InventoryHistoryRecord).filter(InventoryHistoryRecord.line_id == "line-a").all()
+        records = session.query(InventoryHistoryRecord).filter(InventoryHistoryRecord.line_id == "line-b").all()
         assert len(records) == 1
         assert records[0].qty == 20.0
     finally:
@@ -70,11 +70,11 @@ def test_handle_inventory_below_threshold_auto_creates_pending_approval_event():
 
     shortage_message = next(m for m in messages if m["type"] == "line.shortage")
     assert shortage_message["payload"]["status"] == "pending_approval"
-    assert shortage_message["payload"]["lineId"] == "line-a"
+    assert shortage_message["payload"]["lineId"] == "line-b"
 
     session = get_session()
     try:
-        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-b").all()
         assert len(events) == 1
         assert events[0].status == "pending_approval"
     finally:
@@ -87,7 +87,7 @@ def test_handle_inventory_does_not_duplicate_when_event_already_active():
     session.add(
         ShortageEvent(
             id=f"evt-{uuid.uuid4().hex[:8]}",
-            line_id="line-a",
+            line_id="line-b",
             detected_at=datetime.now(timezone.utc),
             status="pending_approval",
             part_name="M6 볼트 세트",
@@ -103,7 +103,7 @@ def test_handle_inventory_does_not_duplicate_when_event_already_active():
 
     session = get_session()
     try:
-        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").all()
+        events = session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-b").all()
         assert len(events) == 1  # 여전히 1건
     finally:
         session.close()
@@ -112,7 +112,7 @@ def test_handle_inventory_does_not_duplicate_when_event_already_active():
 def test_handle_inventory_respects_cooldown():
     _ensure_seeded()
     session = get_session()
-    line = session.get(Line, "line-a")
+    line = session.get(Line, "line-b")
     line.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=60)
     session.commit()
     session.close()
@@ -123,7 +123,7 @@ def test_handle_inventory_respects_cooldown():
 
     session = get_session()
     try:
-        assert session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").count() == 0
+        assert session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-b").count() == 0
     finally:
         session.close()
 
@@ -143,6 +143,27 @@ def test_handle_inventory_skips_unknown_line():
     )
 
     assert handle_inventory(inventory) == []
+
+
+def test_handle_inventory_skips_line_with_bins():
+    """이슈 #37: line-a는 bins가 있어서 라인 단위 INVENTORY는 무시해야 한다 —
+    line.current_qty를 덮어쓰지도, 자동 감지 이벤트를 만들지도 않는다."""
+    _ensure_seeded()
+    session = get_session()
+    original_qty = session.get(Line, "line-a").current_qty
+    session.close()
+
+    inventory = _make_inventory(area_ratio=0.01, line_id="line-a", cameraId="cam-line-a-ceil")
+
+    assert handle_inventory(inventory) == []
+
+    session = get_session()
+    try:
+        line = session.get(Line, "line-a")
+        assert line.current_qty == original_qty  # 안 건드림
+        assert session.query(ShortageEvent).filter(ShortageEvent.line_id == "line-a").count() == 0
+    finally:
+        session.close()
 
 
 def test_handle_status_updates_robot_state():

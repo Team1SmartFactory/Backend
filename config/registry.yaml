@@ -18,12 +18,42 @@ layout:
 lines:
   - lineId: line-a
     name: "A라인"
+    # 아래 partId/capacity/thresholdRatio는 bins 도입 이전과의 호환용 대표값
+    # (Line.status/currentQty는 실제로는 bins 롤업으로 계산된다 — 이슈 #37).
     partId: P-001
     capacity: 50
     thresholdRatio: 0.05
     x: 19.6
     y: 29.5
     simulated: false # 실기
+    # 실물 로봇팔(omxf-line-01, station_b)이 닿을 수 있는 칸 4개 — 각 칸에 서로
+    # 다른 부품이 적재된다. label은 Hardware topic_map.py의 PART_TO_BIN이 참조하는
+    # 물리 칸 이름(bin_a~d)과 맞춰야 한다.
+    bins:
+      - binId: line-a-bin-a
+        label: a
+        partId: P-101
+        partName: "M6 볼트 세트"
+        capacity: 50
+        thresholdRatio: 0.05
+      - binId: line-a-bin-b
+        label: b
+        partId: P-102
+        partName: "M8 너트 세트"
+        capacity: 50
+        thresholdRatio: 0.05
+      - binId: line-a-bin-c
+        label: c
+        partId: P-103
+        partName: "베어링 6202"
+        capacity: 50
+        thresholdRatio: 0.05
+      - binId: line-a-bin-d
+        label: d
+        partId: P-104
+        partName: "스프링 와셔 세트"
+        capacity: 50
+        thresholdRatio: 0.05
   - lineId: line-b
     name: "B라인"
     partId: P-002
