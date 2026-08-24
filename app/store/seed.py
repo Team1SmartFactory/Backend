@@ -10,6 +10,14 @@ ROBOT_TYPE_BY_ROLE = {
     "AMR": "beagle",
 }
 
+# 시뮬 라인(simulated: true, line-b~f)은 뒤에서 실제로 값을 흘려보내는 로봇/카메라가
+# 없다 — currentQty를 0으로 시딩하면 threshold 이하라서 기동하자마자 "부족"으로
+# 보인다(실제로는 아무 일도 없었는데). 정상 구간(임계치의 3배, app/api/rest.py
+# SUFFICIENT_QTY_MULTIPLIER와 같은 관례)으로 시딩해 목데이터 라인이 처음부터
+# 가짜 부족으로 뜨지 않게 한다. 실기(simulated: false, line-a)는 실제 비전이
+# 곧 값을 보정해줄 것이므로 기존대로 0에서 시작한다.
+SIMULATED_LINE_SAFE_QTY_MULTIPLIER = 3.0
+
 
 def seed_from_registry(session: Session) -> None:
     """DB가 비어있으면 registry.yaml 값으로 초기 라인/로봇을 채운다.
@@ -21,12 +29,14 @@ def seed_from_registry(session: Session) -> None:
         return
 
     for line in registry.lines:
+        threshold_pct = line.thresholdRatio * 100  # 0~1 비율 -> 0~100 %
+        initial_qty = threshold_pct * SIMULATED_LINE_SAFE_QTY_MULTIPLIER if line.simulated else 0.0
         session.add(
             Line(
                 id=line.lineId,
                 name=line.name,
-                threshold=line.thresholdRatio * 100,  # 0~1 비율 -> 0~100 %
-                current_qty=0.0,
+                threshold=threshold_pct,
+                current_qty=initial_qty,
                 status="normal",
                 position_x=line.x,
                 position_y=line.y,
