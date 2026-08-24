@@ -33,8 +33,12 @@ def test_list_cameras_reflects_registry_and_derives_online_from_stream_url():
 
     line_camera = next(c for c in cameras if c["scope"] == "line" and c["lineId"] == "line-a")
     assert line_camera["label"] == "A라인"
-    assert line_camera["streamUrl"] is None
-    assert line_camera["online"] is False  # streamUrl 없음 -> online false
+    assert line_camera["streamUrl"] is not None  # line-a도 실물 배선됨 (PC2)
+    assert line_camera["online"] is True
+
+    offline_camera = next(c for c in cameras if c["scope"] == "line" and c["lineId"] == "line-b")
+    assert offline_camera["streamUrl"] is None
+    assert offline_camera["online"] is False  # streamUrl 없음 -> online false
 
 
 def test_get_permissions_returns_default_when_unset():

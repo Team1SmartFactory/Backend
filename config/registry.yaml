@@ -188,6 +188,8 @@ cameras:
     scope: line
     lineId: line-a
     label: "A라인"
+    # PC2(10.101.49.215)의 cctv_server.py가 서비스한다 — 카메라가 꽂힌 PC가 호스트.
+    streamUrl: "http://10.101.49.215:8899/cam/cam-line-a.mjpg"
   - cameraId: cam-line-b
     scope: line
     lineId: line-b
