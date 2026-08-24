@@ -182,6 +182,8 @@ cameras:
   - cameraId: cam-overview
     scope: overview
     label: "공장 전체 뷰"
+    # PC1(10.101.49.216)의 Hardware scripts/cctv_server.py가 서비스한다.
+    streamUrl: "http://10.101.49.216:8899/cam/cam-overview.mjpg"
   - cameraId: cam-line-a
     scope: line
     lineId: line-a

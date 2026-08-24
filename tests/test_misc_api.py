@@ -27,11 +27,14 @@ def test_list_cameras_reflects_registry_and_derives_online_from_stream_url():
 
     overview = next(c for c in cameras if c["scope"] == "overview")
     assert overview["lineId"] is None
-    assert overview["streamUrl"] is None
-    assert overview["online"] is False  # streamUrl 없음 -> online false
+    # cam-overview는 실물 배선됨(Hardware scripts/cctv_server.py의 MJPEG 주소).
+    assert overview["streamUrl"] is not None
+    assert overview["online"] is True  # streamUrl 있음 -> online true
 
     line_camera = next(c for c in cameras if c["scope"] == "line" and c["lineId"] == "line-a")
     assert line_camera["label"] == "A라인"
+    assert line_camera["streamUrl"] is None
+    assert line_camera["online"] is False  # streamUrl 없음 -> online false
 
 
 def test_get_permissions_returns_default_when_unset():
