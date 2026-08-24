@@ -79,11 +79,19 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
 def _maybe_create_shortage_event(session, line: Line, inventory: Inventory) -> ShortageEvent | None:
     """currentQty가 threshold 이하이고 아래 조건을 모두 만족하면 pending_approval
     이벤트를 자동 생성한다:
+      - 실기 라인일 것 (simulated: false) — 시뮬 라인(line-b~f)은 뒤에서 실제로
+        재고를 흘려보내는 로봇/카메라가 없어서, 부족이 떠도 아무도 대응할 수
+        없다. 목데이터 라인은 절대 부족으로 뜨지 않게 아예 자동 감지 대상에서
+        뺀다(관리자가 PUT .../stock으로 직접 지정하는 수동 경로는 여전히 열어둠).
       - 그 라인에 이미 진행 중인 이벤트가 없을 것 (라인당 활성 이벤트 1개 제약 —
         app/api/rest.py의 PUT /lines/{id}/stock과 동일 불변식, ACTIVE_EVENT_STATUSES)
       - cooldown_until이 아직 안 지났으면 생성 안 함 (반려/현황지정 직후 쿨다운 —
         이 필드가 이슈 #25/#27부터 있었지만 지금까지 아무도 읽지 않던 것을 여기서 처음 씀)
     """
+    line_config = registry.get_line(line.id)
+    if line_config is None or line_config.simulated:
+        return None
+
     if line.current_qty > line.threshold:
         return None
 
@@ -96,10 +104,6 @@ def _maybe_create_shortage_event(session, line: Line, inventory: Inventory) -> S
         .first()
     )
     if active is not None:
-        return None
-
-    line_config = registry.get_line(line.id)
-    if line_config is None:
         return None
 
     event = ShortageEvent(
