@@ -23,10 +23,15 @@ def test_list_cameras_reflects_registry_and_derives_online_from_stream_url():
 
     assert response.status_code == 200
     cameras = response.json()
-    assert len(cameras) == 7  # cam-overview + line-a~line-f
+    assert len(cameras) == 8  # cam-warehouse + cam-overview + line-a~line-f
 
-    overview = next(c for c in cameras if c["scope"] == "overview")
+    overview = next(c for c in cameras if c["id"] == "cam-overview")
+    assert overview["scope"] == "overview"
     assert overview["lineId"] is None
+
+    warehouse = next(c for c in cameras if c["id"] == "cam-warehouse")
+    assert warehouse["label"] == "창고"
+    assert warehouse["online"] is True
     # cam-overview는 실물 배선됨(Hardware scripts/cctv_server.py의 MJPEG 주소).
     assert overview["streamUrl"] is not None
     assert overview["online"] is True  # streamUrl 있음 -> online true

@@ -179,11 +179,18 @@ robots:
 # 그러면 GET /cameras가 online:false로 내려주고 프론트는 자리표시자를 보여준다.
 # 나중에 실제 MJPEG 주소가 생기면 streamUrl만 채우면 된다(코드 수정 불필요).
 cameras:
+  # 창고(스테이션 A 보관소) 카메라 — PC1(10.101.49.216)의 cctv_server.py.
+  # 처음엔 이 카메라 하나를 전체 뷰로 썼다가, 전체 뷰 전용 카메라가 생기면서
+  # 창고 담당으로 역할이 좁혀졌다 (id도 그에 맞게 cam-warehouse로).
+  - cameraId: cam-warehouse
+    scope: overview
+    label: "창고"
+    streamUrl: "http://10.101.49.216:8899/cam/cam-warehouse.mjpg"
+  # 공장 전체 뷰 — PC2(10.101.49.215)의 cctv_server.py, 두 번째 C270.
   - cameraId: cam-overview
     scope: overview
     label: "공장 전체 뷰"
-    # PC1(10.101.49.216)의 Hardware scripts/cctv_server.py가 서비스한다.
-    streamUrl: "http://10.101.49.216:8899/cam/cam-overview.mjpg"
+    streamUrl: "http://10.101.49.215:8899/cam/cam-overview.mjpg"
   - cameraId: cam-line-a
     scope: line
     lineId: line-a
