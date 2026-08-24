@@ -20,6 +20,18 @@ class LayoutConfig(BaseModel):
     bounds: Bounds
 
 
+class BinConfig(BaseModel):
+    """라인 안의 부품 적재 위치(칸). 이슈 #37 — line-a처럼 실물 로봇팔 하나가 닿을
+    수 있는 칸 여러 개에 서로 다른 부품을 적재하는 라인에만 있다."""
+
+    binId: str
+    label: str  # "a" | "b" | "c" | "d" (Hardware topic_map.py의 bin_a~d와 매칭)
+    partId: str
+    partName: str
+    capacity: int
+    thresholdRatio: float
+
+
 class LineConfig(BaseModel):
     lineId: str
     name: str
@@ -29,6 +41,10 @@ class LineConfig(BaseModel):
     x: float
     y: float
     simulated: bool
+    # bins가 있으면 이 라인의 부족 판정은 라인 전체가 아니라 칸 단위로 이뤄진다
+    # (app/api/rest.py). 없으면(대부분의 라인) partId/capacity/thresholdRatio가
+    # 그대로 쓰이는 기존 방식 그대로.
+    bins: list[BinConfig] = []
 
 
 class RobotConfig(BaseModel):
@@ -69,6 +85,17 @@ class Registry(BaseModel):
 
     def get_robots_for_line(self, line_id: str) -> list[RobotConfig]:
         return [robot for robot in self.robots if robot.lineId == line_id]
+
+    def get_bin(self, bin_id: str) -> BinConfig | None:
+        for line in self.lines:
+            for bin_config in line.bins:
+                if bin_config.binId == bin_id:
+                    return bin_config
+        return None
+
+    def get_bins_for_line(self, line_id: str) -> list[BinConfig]:
+        line = self.get_line(line_id)
+        return line.bins if line is not None else []
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> Registry:

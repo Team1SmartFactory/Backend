@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
 from app.core.registry import registry
-from app.store.models import Line, Robot
+from app.store.models import Bin, Line, Robot
 
 # registry.yaml의 role -> API_LIST.md RobotType(beagle/omxf_storage/omxf_line) 매핑
 ROBOT_TYPE_BY_ROLE = {
@@ -32,6 +32,20 @@ def seed_from_registry(session: Session) -> None:
                 position_y=line.y,
             )
         )
+        for bin_config in line.bins:
+            session.add(
+                Bin(
+                    id=bin_config.binId,
+                    line_id=line.lineId,
+                    label=bin_config.label,
+                    part_id=bin_config.partId,
+                    part_name=bin_config.partName,
+                    capacity=bin_config.capacity,
+                    threshold=bin_config.thresholdRatio * 100,
+                    current_qty=0.0,
+                    status="normal",
+                )
+            )
 
     for robot in registry.robots:
         session.add(

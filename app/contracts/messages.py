@@ -118,6 +118,10 @@ class Inventory(MessageBase):
     status: InventoryStatus
     source: InventorySource
     cameraId: str
+    # 이슈 #37 예약 필드 — line-a처럼 칸(bin) 단위로 부품을 관리하는 라인의 칸을
+    # 식별한다. 카메라 캘리브레이션이 끝나 칸 단위 비전 연동이 붙기 전까지는
+    # 아무도 안 채운다(app/mqtt/handlers.py는 아직 이 필드를 읽지 않음).
+    binId: str | None = None
 
 
 class Job(MessageBase):

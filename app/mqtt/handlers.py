@@ -42,12 +42,22 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
 
     갱신된 currentQty가 threshold 이하면 승인 대기 이벤트를 자동 생성한다(이슈 #31) —
     이게 없으면 "카메라 감지 -> 승인 팝업" 시나리오의 첫 단계가 아예 안 돈다.
+
+    이슈 #37: bins가 있는 라인(line-a)은 라인 단위 INVENTORY를 무시한다 — 그 라인은
+    이제 칸(bin) 단위로 판정해야 해서 "라인 전체의 areaRatio" 자체가 의미가 없다.
+    칸 단위 비전 연동은 카메라 캘리브레이션이 끝난 뒤 별도로 붙인다(Inventory.binId,
+    지금은 아무도 안 채움) — 그때까지 line-a는 PUT .../bins/{binId}/stock 수동
+    트리거로만 시연한다.
     """
     session = get_session()
     try:
         line = session.get(Line, inventory.lineId)
         if line is None:
             logger.warning("등록되지 않은 lineId의 INVENTORY 수신, 무시: %s", inventory.lineId)
+            return []
+
+        if registry.get_bins_for_line(line.id):
+            logger.info("bins가 있는 라인의 라인 단위 INVENTORY, 무시: %s", inventory.lineId)
             return []
 
         line.current_qty = area_ratio_to_percent(inventory.areaRatio)
@@ -261,6 +271,7 @@ def _shortage_event_message(event: ShortageEvent) -> dict:
     payload = ShortageEventOut(
         id=event.id,
         line_id=event.line_id,
+        bin_id=event.bin_id,
         detected_at=event.detected_at,
         status=event.status,
         part_name=event.part_name,
