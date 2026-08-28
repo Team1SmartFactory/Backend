@@ -195,8 +195,10 @@ cameras:
     scope: line
     lineId: line-a
     label: "A라인"
-    # PC2(10.101.49.215)의 cctv_server.py가 서비스한다 — 카메라가 꽂힌 PC가 호스트.
-    streamUrl: "http://10.101.49.215:8899/cam/cam-line-a.mjpg"
+    # A라인 물리 카메라는 재고함 감시로 전용됐다(2026-08-28). 대신 PC1의 도착
+    # 감지 노드가 YOLO 박스를 그려 발행하는 프레임을 ros_mjpeg_server.py(:8898)가
+    # 재서비스한다 — A 베이 실영상 + 비글 인식 오버레이.
+    streamUrl: "http://10.101.49.216:8898/cam/cam-line-a.mjpg"
   - cameraId: cam-line-b
     scope: line
     lineId: line-b
