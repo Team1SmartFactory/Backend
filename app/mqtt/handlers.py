@@ -14,15 +14,29 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from app.api.schemas import LineUpdateOut, ShortageEventOut
+from app.api.schemas import BinUpdateOut, LineUpdateOut, ShortageEventOut
 from app.contracts.enums import RobotState
-from app.contracts.messages import Inventory, Status, Telemetry
-from app.core.orchestrator import advance_job, fail_job, reset_timeout_watch, timeout_for_step
+from app.contracts.messages import Inventory, Readiness, Status, Telemetry
+from app.core.orchestrator import (
+    advance_job,
+    fail_job,
+    recompute_line_rollup,
+    reset_timeout_watch,
+    timeout_for_step,
+)
+from app.core.readiness import set_station_readiness
 from app.core.registry import registry
 from app.core.time import to_iso_z
 from app.mqtt.mapping import area_ratio_to_percent, meters_to_relative, status_to_robot_state
 from app.store.db import get_session
-from app.store.models import ACTIVE_EVENT_STATUSES, InventoryHistoryRecord, Line, Robot, ShortageEvent
+from app.store.models import (
+    ACTIVE_EVENT_STATUSES,
+    Bin,
+    InventoryHistoryRecord,
+    Line,
+    Robot,
+    ShortageEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +88,112 @@ def handle_inventory(inventory: Inventory) -> list[dict]:
         return messages
     finally:
         session.close()
+
+
+def handle_bin_inventory(inventory: Inventory) -> list[dict]:
+    """칸 단위 INVENTORY 수신 처리 (이슈 #47, COMMAND_SCHEMA.md §10.2).
+
+    handle_inventory가 bins 있는 라인을 통째로 버리던 자리(이슈 #37의 TODO)를
+    채운다. 라인 전체의 areaRatio는 칸마다 다른 부품이 있는 라인에서 의미가
+    없지만, 칸 하나의 areaRatio는 정확히 그 칸의 재고다.
+
+    부족 판정은 칸별로 독립이다 — 같은 라인의 다른 칸이 이미 승인 대기라고 해서
+    이 칸의 부족을 안 띄우면, 두 칸이 비었을 때 두 번째 칸은 아무도 모른다.
+    """
+    session = get_session()
+    try:
+        if not inventory.binId:
+            logger.warning("binId 없는 칸 단위 INVENTORY, 무시: %s", inventory.lineId)
+            return []
+
+        bin_row = session.get(Bin, inventory.binId)
+        if bin_row is None:
+            logger.warning("등록되지 않은 binId의 INVENTORY, 무시: %s", inventory.binId)
+            return []
+
+        bin_row.current_qty = area_ratio_to_percent(inventory.areaRatio)
+        bin_row.updated_at = inventory.timestamp
+        session.commit()
+
+        messages = [_bin_message(bin_row)]
+
+        # 칸 갱신이 라인 뱃지(롤업)까지 바꾸므로 라인도 같이 밀어준다 —
+        # 안 그러면 칸은 비었는데 라인 카드만 멀쩡해 보인다.
+        line = recompute_line_rollup(session, bin_row.line_id)
+        if line is not None:
+            messages.append(_line_message(line))
+
+        new_event = _maybe_create_bin_shortage_event(session, bin_row, inventory)
+        if new_event is not None:
+            messages.append(_shortage_event_message(new_event))
+
+        return messages
+    finally:
+        session.close()
+
+
+def handle_readiness(readiness: Readiness) -> list[dict]:
+    """스테이션 준비 상태 수신 처리 (이슈 #47, COMMAND_SCHEMA.md §10.3).
+
+    DB에 쓰지 않는다: 이건 상태가 아니라 지금 이 순간의 관측이고, 쓰이는 곳은
+    승인 요청 한 군데뿐이다. 프로세스 메모리 캐시로 충분하고, 백엔드가 재시작하면
+    retain된 메시지가 곧바로 다시 채운다.
+
+    WS로도 안 내보낸다 — 화면에 상시로 띄울 값이 아니라, 승인이 거절될 때 그
+    이유로만 쓴다(POST /shortage-events/{id}/approve의 409 응답).
+    """
+    set_station_readiness(readiness)
+    logger.info(
+        "스테이션 준비 상태 갱신: %s ready=%s checks=%s",
+        readiness.stationId, readiness.ready, readiness.checks,
+    )
+    return []
+
+
+def _maybe_create_bin_shortage_event(session, bin_row: Bin, inventory: Inventory) -> ShortageEvent | None:
+    """칸 단위 부족 이벤트 자동 생성. 라인 단위(_maybe_create_shortage_event)와
+    같은 규칙을 칸 범위로 적용한다:
+
+      - 실기 라인일 것 (시뮬 라인은 뒤에서 응답할 로봇이 없다)
+      - 그 칸에 이미 진행 중인 이벤트가 없을 것 — 라인이 아니라 칸 단위다.
+        같은 라인의 다른 칸은 각각 부족으로 뜰 수 있어야 한다.
+      - 라인의 쿨다운이 아직 안 지났으면 생성하지 않음 (반려 직후 재감지 방지)
+    """
+    line_config = registry.get_line(bin_row.line_id)
+    if line_config is None or line_config.simulated:
+        return None
+
+    if bin_row.current_qty > bin_row.threshold:
+        return None
+
+    line = session.get(Line, bin_row.line_id)
+    if line is not None and line.cooldown_until is not None:
+        if _as_utc(line.cooldown_until) > inventory.timestamp:
+            return None
+
+    active = (
+        session.query(ShortageEvent)
+        .filter(
+            ShortageEvent.bin_id == bin_row.id,
+            ShortageEvent.status.in_(ACTIVE_EVENT_STATUSES),
+        )
+        .first()
+    )
+    if active is not None:
+        return None
+
+    event = ShortageEvent(
+        id=str(uuid.uuid4()),
+        line_id=bin_row.line_id,
+        bin_id=bin_row.id,
+        detected_at=inventory.timestamp,
+        status="pending_approval",
+        part_name=bin_row.part_name,
+        required_qty=bin_row.capacity,
+    )
+    session.add(event)
+    session.commit()
+    return event
 
 
 def _maybe_create_shortage_event(session, line: Line, inventory: Inventory) -> ShortageEvent | None:
@@ -284,6 +404,17 @@ def _shortage_event_message(event: ShortageEvent) -> dict:
         approved_at=event.approved_at,
     ).model_dump(by_alias=True)
     return {"type": "line.shortage", "payload": payload}
+
+
+def _bin_message(bin_row: Bin) -> dict:
+    payload = BinUpdateOut(
+        line_id=bin_row.line_id,
+        bin_id=bin_row.id,
+        current_qty=bin_row.current_qty,
+        status=bin_row.status,
+        updated_at=bin_row.updated_at,
+    ).model_dump(by_alias=True)
+    return {"type": "line.bin.inventory", "payload": payload}
 
 
 def _line_message(line: Line) -> dict:

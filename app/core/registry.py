@@ -30,6 +30,10 @@ class BinConfig(BaseModel):
     partName: str
     capacity: int
     thresholdRatio: float
+    # 이 칸에 부품을 놓는 팔. line-a의 칸 넷은 팔 하나가 다 닿지 않아서, 셀 박스를
+    # 사이에 두고 마주 본 팔 둘이 두 칸씩 맡는다(2026-08-31). 비워두면 라인의 첫
+    # LINE_ARM이 담당한다 — 팔이 하나뿐인 라인은 지금까지처럼 동작한다.
+    robotId: str | None = None
 
 
 class LineConfig(BaseModel):

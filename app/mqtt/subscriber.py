@@ -10,12 +10,14 @@ import json
 import logging
 import re
 
-from app.contracts.messages import Inventory, Status, Telemetry
+from app.contracts.messages import Inventory, Readiness, Status, Telemetry
 from app.mqtt.client import mqtt_client
 from app.mqtt.handlers import (
+    handle_bin_inventory,
     handle_bridge_online,
     handle_inventory,
     handle_online_status,
+    handle_readiness,
     handle_status,
     handle_telemetry,
 )
@@ -29,6 +31,11 @@ SUBSCRIBED_TOPICS = [
     ("robot/+/telemetry", 0),
     ("robot/+/online", 1),
     ("line/+/inventory", 1),
+    # 칸 단위 재고 (COMMAND_SCHEMA.md §10.2). line/+/inventory는 이 토픽에 매칭되지
+    # 않는다 — MQTT의 +는 레벨 하나만 대신하므로 별도 구독이 필요하다.
+    ("line/+/bin/+/inventory", 1),
+    # 스테이션 준비 상태 (§10.3)
+    ("station/+/readiness", 1),
     ("bridge/online", 1),
 ]
 
@@ -36,6 +43,8 @@ _STATUS_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/status$")
 _TELEMETRY_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/telemetry$")
 _ONLINE_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/online$")
 _INVENTORY_TOPIC = re.compile(r"^line/(?P<line_id>[^/]+)/inventory$")
+_BIN_INVENTORY_TOPIC = re.compile(r"^line/(?P<line_id>[^/]+)/bin/(?P<label>[^/]+)/inventory$")
+_READINESS_TOPIC = re.compile(r"^station/(?P<station_id>[^/]+)/readiness$")
 _BRIDGE_ONLINE_TOPIC = re.compile(r"^bridge/online$")
 
 
@@ -73,8 +82,14 @@ def _route(topic: str, data: dict) -> list[dict]:
         return handle_telemetry(Telemetry.model_validate(data))
     if match := _ONLINE_TOPIC.match(topic):
         return handle_online_status(match.group("robot_id"), bool(data.get("online")))
+    # 칸 단위가 먼저다. line/+/inventory 정규식은 칸 토픽에 매칭되지 않지만,
+    # 순서에 기대지 않도록 더 구체적인 쪽을 앞에 둔다.
+    if _BIN_INVENTORY_TOPIC.match(topic):
+        return handle_bin_inventory(Inventory.model_validate(data))
     if _INVENTORY_TOPIC.match(topic):
         return handle_inventory(Inventory.model_validate(data))
+    if _READINESS_TOPIC.match(topic):
+        return handle_readiness(Readiness.model_validate(data))
     if _BRIDGE_ONLINE_TOPIC.match(topic):
         return handle_bridge_online(bool(data.get("online")), list(data.get("robotIds", [])))
     return []

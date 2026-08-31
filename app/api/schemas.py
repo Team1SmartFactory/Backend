@@ -72,6 +72,23 @@ class LineUpdateOut(CamelModel):
     updated_at: UtcDatetime
 
 
+class BinUpdateOut(CamelModel):
+    """WebSocket line.bin.inventory 페이로드 — Bin의 부분 데이터 (이슈 #47).
+
+    LineUpdateOut과 같은 이유로 부분 데이터다: 프론트 캐시에 이미 있는 칸만
+    갱신하라는 뜻이고, label/partName처럼 스냅샷에서 오는 값은 싣지 않는다.
+
+    이게 없으면 칸의 재고율은 페이지를 새로 열기 전까지 영원히 스냅샷 시점 값에
+    머문다 — 프론트는 폴링을 하지 않고 staleTime이 무한이다.
+    """
+
+    line_id: str
+    bin_id: str
+    current_qty: float
+    status: str
+    updated_at: UtcDatetime
+
+
 class RobotStatusOut(CamelModel):
     """API_LIST.md 3.4 RobotStatus."""
 

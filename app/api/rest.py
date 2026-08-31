@@ -22,6 +22,7 @@ from app.api.schemas import (
     SnapshotOut,
 )
 from app.core.orchestrator import cancel_job, recompute_line_rollup, start_job
+from app.core.readiness import check_line_ready
 from app.core.registry import registry
 from app.store.db import get_session
 from app.store.models import (
@@ -172,6 +173,24 @@ async def approve_shortage_event(
 
     if event.status != "pending_approval":
         raise HTTPException(status_code=409, detail=_duplicate_action_detail(event))
+
+    # 승인은 "보충해도 좋다"는 사람의 판단이지, 보충이 가능하다는 보장이 아니다.
+    # 창고에 부품이 없거나 비글이 보관소에 없으면 팔은 허공을 집는다 — 이 시점의
+    # 카메라가 그걸 안다(이슈 #47, COMMAND_SCHEMA.md §10.3).
+    #
+    # 이벤트는 pending_approval로 남긴다: 사람이 부품을 채워 넣고 같은 알림에서
+    # 다시 승인할 수 있어야 한다. 승인을 소비해 버리면 알림이 사라져서, 정작
+    # 준비가 끝난 뒤에 아무도 그 칸을 보충하지 않는다.
+    verdict = check_line_ready(event.line_id)
+    if not verdict.ready:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "보관소가 준비되지 않아 보충을 시작할 수 없습니다",
+                "reasons": verdict.reasons,
+                "checks": verdict.checks,
+            },
+        )
 
     event.status = "dispatched"
     event.approved_by = body.approved_by
