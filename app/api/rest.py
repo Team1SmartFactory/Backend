@@ -192,10 +192,24 @@ async def approve_shortage_event(
             },
         )
 
-    event.status = "dispatched"
-    event.approved_by = body.approved_by
-    event.approved_at = datetime.now(timezone.utc)
+    # 상태 전이를 조건부 UPDATE로 한다 — 위의 읽기 검사만으로는 동시에 들어온 두
+    # 승인이 둘 다 통과한다. 2026-08-31 실제로 발생: 6초 간격으로 PICK_LOAD가 두 번
+    # 나갔고, 팔은 첫 번째를 수행했는데 브리지는 두 번째를 기다려서 작업이 교착됐다
+    # (브리지의 대기 커맨드는 로봇당 하나뿐이라 나중 것이 앞의 것을 덮는다).
+    approved_at = datetime.now(timezone.utc)
+    changed = (
+        db.query(ShortageEvent)
+        .filter(ShortageEvent.id == event_id, ShortageEvent.status == "pending_approval")
+        .update(
+            {"status": "dispatched", "approved_by": body.approved_by, "approved_at": approved_at},
+            synchronize_session=False,
+        )
+    )
     db.commit()
+    if changed == 0:
+        db.refresh(event)
+        raise HTTPException(status_code=409, detail=_duplicate_action_detail(event))
+    db.refresh(event)
 
     start_job(db, event)  # 1단계(PICK_LOAD) 발행. 이후 진행은 app/core/orchestrator.py가 담당.
 

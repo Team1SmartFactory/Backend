@@ -1,6 +1,14 @@
-import pytest
+import os
 
-from app.core import orchestrator
+# 앱 모듈을 import하기 전에 테스트 전용 DB로 못 박는다. 아래 _fresh_db가 매 테스트마다
+# 테이블을 drop/create하는데, 그 대상이 개발용 dev.db면 테스트 한 번에 실제 데이터가
+# 통째로 날아간다 — 2026-08-31 실기 시연 도중 실제로 그렇게 됐다(재고·부족 이벤트
+# 전부 초기화). DATABASE_URL을 미리 지정해 두면 그 값을 존중한다.
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
+
+import pytest  # noqa: E402
+
+from app.core import orchestrator  # noqa: E402
 from app.mqtt.client import mqtt_client
 from app.store.db import engine, get_session
 from app.store.models import Base
