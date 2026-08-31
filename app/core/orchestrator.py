@@ -55,6 +55,9 @@ ACTION_TIMEOUT_SEC: dict[CommandAction, int] = {
     CommandAction.MOVE_TO: 90,
     CommandAction.HOME: 90,
     CommandAction.ABORT: 15,
+    # 멈춰 선 팔이 자세를 되돌리고 다시 움직이기 시작할 때까지 — 암 동작이라
+    # PICK_LOAD와 같은 급으로 잡는다(이슈 #50).
+    CommandAction.RESUME: 120,
 }
 # ACTION_TIMEOUT_SEC에 없는 액션(향후 확장 대비)의 기본값.
 COMMAND_TIMEOUT_SEC = 60
@@ -155,7 +158,7 @@ def recompute_line_rollup(db: Session, line_id: str) -> Line | None:
 
 def _publish_command(
     db: Session,
-    event: ShortageEvent,
+    event: ShortageEvent | None,
     robot_id: str,
     role: RobotRole,
     action: CommandAction,
@@ -167,11 +170,15 @@ def _publish_command(
     event.current_step/last_command_id는 건드리지 않는다 — 4단계 시퀀스 진행(_issue_step)과
     시퀀스 밖 취소 커맨드(cancel_job의 ABORT/HOME) 둘 다 이 함수를 쓰기 때문에, 어느 필드를
     갱신할지는 호출자가 정한다.
+
+    event=None은 어떤 job에도 속하지 않는 커맨드다(이슈 #50의 RESUME — 멈춘 팔을
+    푸는 건 보충 작업이 아니라 로봇 개별 조치다). jobId는 계약상 nullable이라
+    그대로 비워 보낸다.
     """
     command_id = str(uuid.uuid4())
     command = Command(
         commandId=command_id,
-        jobId=event.id,
+        jobId=event.id if event is not None else None,
         robotId=robot_id,
         role=role,
         action=action,
@@ -183,9 +190,36 @@ def _publish_command(
     wire_payload["timestamp"] = to_iso_z(command.timestamp)
     mqtt_client.publish(f"robot/{robot_id}/cmd", wire_payload, qos=1)
 
-    db.add(CommandRecord(id=command_id, job_id=event.id, robot_id=robot_id, action=action.value, payload=payload))
+    db.add(
+        CommandRecord(
+            id=command_id,
+            job_id=event.id if event is not None else None,
+            robot_id=robot_id,
+            action=action.value,
+            payload=payload,
+        )
+    )
     db.commit()
     return command_id
+
+
+def resume_robot(db: Session, robot_id: str, role: RobotRole) -> str:
+    """멈춰 선(blocked) 팔에게 RESUME을 발행한다 (이슈 #50, POST /robots/{id}/resume).
+
+    _publish_command를 그대로 재사용한다 — MQTT 배선(봉투 구성·토픽·QoS·이력 적재)이
+    두 벌이 되면 한쪽만 계약 변경을 따라가다 조용히 어긋난다.
+
+    job에 묶지 않고(event=None) 타임아웃 감시도 걸지 않는다: cancel_job의 ABORT/HOME과
+    같은 이유로, 이 커맨드의 성패는 보충 작업 진행에 아무 영향이 없다. 결과는 브리지가
+    보내는 STATUS와 뒤이은 CONDITION(blocked=false)으로 화면에 반영된다.
+
+    DB의 로봇 상태는 여기서 건드리지 않는다 — 실제로 풀렸는지는 팔만 안다. 낙관적으로
+    idle로 바꿔두면 RESUME이 실패했을 때 화면만 멀쩡해지고 아무도 다시 누르지 않는다.
+    그래서 두 번 눌러도 안전하다(같은 커맨드가 한 번 더 나갈 뿐).
+    """
+    return _publish_command(
+        db, None, robot_id, role, CommandAction.RESUME, {}, ACTION_TIMEOUT_SEC[CommandAction.RESUME]
+    )
 
 
 def _issue_step(db: Session, event: ShortageEvent, step: int) -> bool:

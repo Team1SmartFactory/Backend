@@ -21,7 +21,7 @@ from app.api.schemas import (
     ShortageEventOut,
     SnapshotOut,
 )
-from app.core.orchestrator import cancel_job, recompute_line_rollup, start_job
+from app.core.orchestrator import cancel_job, recompute_line_rollup, resume_robot, start_job
 from app.core.readiness import check_line_ready
 from app.core.registry import registry
 from app.store.db import get_session
@@ -70,18 +70,20 @@ def get_snapshot(db: Session = Depends(get_db)) -> SnapshotOut:
 
     return SnapshotOut(
         lines=[_line_out(db, line) for line in lines],
-        robots=[
-            RobotStatusOut(
-                robot_id=robot.id,
-                type=robot.type,
-                state=robot.state,
-                current_task_id=robot.current_task_id,
-                position=PositionOut(x=robot.position_x, y=robot.position_y),
-                updated_at=robot.updated_at,
-            )
-            for robot in robots
-        ],
+        robots=[_robot_status_out(robot) for robot in robots],
         shortage_events=[_shortage_event_out(event) for event in events],
+    )
+
+
+def _robot_status_out(robot: Robot) -> RobotStatusOut:
+    return RobotStatusOut(
+        robot_id=robot.id,
+        type=robot.type,
+        state=robot.state,
+        current_task_id=robot.current_task_id,
+        position=PositionOut(x=robot.position_x, y=robot.position_y),
+        updated_at=robot.updated_at,
+        blocked_reason=robot.blocked_reason,
     )
 
 
@@ -436,6 +438,31 @@ async def override_bin_stock(
     if line is not None:
         await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})
     return _bin_out(bin_row)
+
+
+@router.post("/robots/{robot_id}/resume", response_model=RobotStatusOut)
+def resume_robot_endpoint(robot_id: str, db: Session = Depends(get_db)) -> RobotStatusOut:
+    """멈춰 선(blocked) 팔을 대시보드에서 다시 움직이게 한다. 이슈 #50.
+
+    로봇 상태는 여기서 바꾸지 않고 그대로 돌려준다 — 실제로 풀렸는지는 팔만 알고,
+    그 결과는 브리지의 CONDITION(blocked=false)이 WS robot.status로 밀어준다.
+    그래서 응답이 여전히 "blocked"인 것이 정상이고, 두 번 눌러도 안전하다
+    (RESUME이 한 번 더 나갈 뿐 — 이미 풀린 팔에게도 무해하다).
+
+    blocked가 아닌 로봇에도 409를 내지 않는다: 무엇이 진짜 멈췄는지는 팔 쪽 사실이고,
+    화면의 blocked 표시는 늦거나 놓칠 수 있다(재시작 직후, WS 끊김 등). 그때 "지금은
+    멈춘 상태가 아니다"라며 거부하면, 정작 현장에서 멈춰 있는 팔을 풀 방법이 사라진다.
+    """
+    robot = db.get(Robot, robot_id)
+    if robot is None:
+        raise HTTPException(status_code=404, detail="해당 로봇을 찾을 수 없습니다")
+
+    robot_config = registry.get_robot(robot_id)
+    if robot_config is None:
+        raise HTTPException(status_code=404, detail="레지스트리에 없는 로봇입니다")
+
+    resume_robot(db, robot_id, robot_config.role)
+    return _robot_status_out(robot)
 
 
 @router.get("/cameras", response_model=list[CameraOut])

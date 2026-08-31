@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from app.api.schemas import BinUpdateOut, LineUpdateOut, ShortageEventOut
 from app.contracts.enums import RobotState
-from app.contracts.messages import Inventory, Readiness, Status, Telemetry
+from app.contracts.messages import Condition, Inventory, Readiness, Status, Telemetry
 from app.core.orchestrator import (
     advance_job,
     fail_job,
@@ -342,6 +342,55 @@ def handle_online_status(robot_id: str, online: bool) -> list[dict]:
         session.close()
 
 
+def handle_condition(condition: Condition) -> list[dict]:
+    """robot/{id}/condition 수신 처리 (이슈 #50). 실패 후 스스로 멈춰 선 팔을
+    화면에 "blocked"로 띄우고, 풀리면 되돌린다.
+
+    전이 규칙(handle_online_status/handle_bridge_online과 같은 방어적 태도):
+
+    - blocked=true: offline이 아니면 무조건 blocked로 덮는다. 팔이 스스로 섰다는
+      건 지금 하던 일이 없다는 뜻이라, working/moving으로 남아 있던 값이 오히려
+      거짓이다. offline만 예외로 두는 건 그게 더 강한 사실이어서다 — 전원이
+      나갔거나 브리지가 죽은 팔을 "멈춤(재개 가능)"으로 보여주면 관리자는 눌러도
+      아무 일도 안 일어나는 버튼을 계속 누른다.
+
+    - blocked=false: 지금 blocked인 로봇만 idle로 되돌린다. RESUME 이후 팔은
+      곧바로 다음 커맨드를 받아 STATUS로 working/moving을 올릴 수 있고, 그 STATUS가
+      condition보다 먼저 도착할 수 있다(별개 토픽이라 순서 보장 없음) — 그때
+      idle로 덮으면 실제로 움직이는 팔이 화면에서 놀고 있는 것으로 보인다.
+      offline도 같은 이유로 건드리지 않는다(retain된 옛 값이 죽은 로봇을 되살리는 걸 막음).
+
+    reason은 상태 전이와 무관하게 항상 맞춰준다 — 같은 blocked 안에서 사유만
+    바뀌는 재발행(다른 실패로 다시 멈춤)도 화면에 반영돼야 한다.
+    """
+    session = get_session()
+    try:
+        robot = session.get(Robot, condition.robotId)
+        if robot is None:
+            logger.warning("등록되지 않은 robotId의 CONDITION 수신, 무시: %s", condition.robotId)
+            return []
+
+        before = (robot.state, robot.blocked_reason)
+
+        if condition.blocked:
+            if robot.state != "offline":
+                robot.state = "blocked"
+            robot.blocked_reason = condition.detail
+        else:
+            if robot.state == "blocked":
+                robot.state = "idle"
+            robot.blocked_reason = None
+
+        if (robot.state, robot.blocked_reason) == before:
+            return []
+
+        robot.updated_at = condition.timestamp
+        session.commit()
+        return [_robot_status_payload(robot)]
+    finally:
+        session.close()
+
+
 def handle_bridge_online(online: bool, robot_ids: list[str]) -> list[dict]:
     """bridge/online (COMMAND_SCHEMA.md §9a, 이슈 #34) 수신 처리.
 
@@ -387,6 +436,9 @@ def _robot_status_payload(robot: Robot) -> dict:
             "currentTaskId": robot.current_task_id,
             "position": {"x": robot.position_x, "y": robot.position_y},
             "updatedAt": to_iso_z(robot.updated_at),
+            # 이슈 #50 — RobotStatusOut(스냅샷)과 같은 필드 집합을 유지한다.
+            # WS만 이 값을 빠뜨리면, 새로고침 전까지 멈춘 이유가 화면에 안 뜬다.
+            "blockedReason": robot.blocked_reason,
         },
     }
 

@@ -17,6 +17,10 @@ class CommandAction(str, Enum):
     UNLOAD_RESUME = "UNLOAD_RESUME"  # LINE_ARM
     HOME = "HOME"  # 공통
     ABORT = "ABORT"  # 공통
+    # 실패 후 스스로 자리를 잡고 멈춰 선(blocked) 팔을 다시 움직이게 한다 (이슈 #50).
+    # 팔이 멈추면 사람이 현장에 가서 컨트롤러를 만지는 것 말고는 되살릴 방법이 없었다 —
+    # 대시보드에서 풀 수 있어야 시연 중 한 번의 실패가 라인 전체를 끝내지 않는다.
+    RESUME = "RESUME"  # 공통
 
 
 class RobotState(str, Enum):

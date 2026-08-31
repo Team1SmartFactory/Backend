@@ -10,11 +10,12 @@ import json
 import logging
 import re
 
-from app.contracts.messages import Inventory, Readiness, Status, Telemetry
+from app.contracts.messages import Condition, Inventory, Readiness, Status, Telemetry
 from app.mqtt.client import mqtt_client
 from app.mqtt.handlers import (
     handle_bin_inventory,
     handle_bridge_online,
+    handle_condition,
     handle_inventory,
     handle_online_status,
     handle_readiness,
@@ -30,6 +31,9 @@ SUBSCRIBED_TOPICS = [
     ("robot/+/status", 1),
     ("robot/+/telemetry", 0),
     ("robot/+/online", 1),
+    # 실패 후 스스로 멈춰 선 팔 (이슈 #50). retain=true라 백엔드가 나중에 떠도
+    # 구독 즉시 마지막 값을 받는다 — 재시작했다고 이미 멈춰 있는 팔을 놓치지 않는다.
+    ("robot/+/condition", 1),
     ("line/+/inventory", 1),
     # 칸 단위 재고 (COMMAND_SCHEMA.md §10.2). line/+/inventory는 이 토픽에 매칭되지
     # 않는다 — MQTT의 +는 레벨 하나만 대신하므로 별도 구독이 필요하다.
@@ -42,6 +46,7 @@ SUBSCRIBED_TOPICS = [
 _STATUS_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/status$")
 _TELEMETRY_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/telemetry$")
 _ONLINE_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/online$")
+_CONDITION_TOPIC = re.compile(r"^robot/(?P<robot_id>[^/]+)/condition$")
 _INVENTORY_TOPIC = re.compile(r"^line/(?P<line_id>[^/]+)/inventory$")
 _BIN_INVENTORY_TOPIC = re.compile(r"^line/(?P<line_id>[^/]+)/bin/(?P<label>[^/]+)/inventory$")
 _READINESS_TOPIC = re.compile(r"^station/(?P<station_id>[^/]+)/readiness$")
@@ -82,6 +87,8 @@ def _route(topic: str, data: dict) -> list[dict]:
         return handle_telemetry(Telemetry.model_validate(data))
     if match := _ONLINE_TOPIC.match(topic):
         return handle_online_status(match.group("robot_id"), bool(data.get("online")))
+    if _CONDITION_TOPIC.match(topic):
+        return handle_condition(Condition.model_validate(data))
     # 칸 단위가 먼저다. line/+/inventory 정규식은 칸 토픽에 매칭되지 않지만,
     # 순서에 기대지 않도록 더 구체적인 쪽을 앞에 둔다.
     if _BIN_INVENTORY_TOPIC.match(topic):
