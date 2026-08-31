@@ -142,6 +142,28 @@ class Readiness(MessageBase):
     cameraId: str | None = None
 
 
+class Condition(MessageBase):
+    """로봇(브리지) -> 백엔드. robot/{robotId}/condition (이슈 #50).
+
+    작업에 실패한 팔은 그 자리에서 스스로 멈춰 선다(blocked). STATUS(FAILED)는
+    "그 커맨드가 실패했다"는 한 순간의 사건이라 지나가면 사라지지만, 멈춰 선
+    상태는 사람이 풀어줄 때까지 계속 유지되는 사실이다 — 그래서 별도 토픽으로
+    분리했고, blocked가 바뀔 때만 발행된다.
+
+    retain=true가 핵심이다: 대시보드나 백엔드가 나중에 떠도 구독 즉시 마지막
+    값을 받는다. 이게 없으면 백엔드 재시작 후에는 이미 멈춰 있는 팔이 화면에
+    멀쩡한 idle로 보이고, 아무도 RESUME을 눌러줄 생각을 못 한다.
+
+    detail은 그 팔의 마지막 실패 사유(예: "step failed with status 5") —
+    BE는 해석하지 않고 그대로 저장·전달만 한다(ErrorDetail.detailCode와 같은 태도).
+    """
+
+    type: Literal["CONDITION"] = "CONDITION"
+    robotId: str
+    blocked: bool
+    detail: str | None = None
+
+
 class Job(MessageBase):
     """보충 작업 단위. COMMAND_SCHEMA.md 7장."""
 

@@ -98,6 +98,10 @@ class RobotStatusOut(CamelModel):
     current_task_id: str | None = None
     position: PositionOut
     updated_at: UtcDatetime
+    # state가 "blocked"일 때 왜 멈췄는지 (이슈 #50). blocked가 아니면 항상 null이라
+    # 기존 프론트 코드는 그대로 둬도 동작한다(옵셔널 취급). 이 값이 없으면 화면에는
+    # "멈춤"만 뜨고, 관리자는 재개 버튼을 눌러도 되는 상황인지 알 방법이 없다.
+    blocked_reason: str | None = None
 
 
 class ShortageEventOut(CamelModel):

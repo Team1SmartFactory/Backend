@@ -72,11 +72,15 @@ class Robot(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)  # robotId, 예: "beagle-01"
     type: Mapped[str] = mapped_column(String)  # beagle | omxf_storage | omxf_line
     line_id: Mapped[str] = mapped_column(String, ForeignKey("lines.id"))
-    state: Mapped[str] = mapped_column(String, default="idle")
+    state: Mapped[str] = mapped_column(String, default="idle")  # idle|moving|working|error|offline|blocked
     current_task_id: Mapped[str | None] = mapped_column(String, nullable=True)  # jobId
     position_x: Mapped[float] = mapped_column(Float, default=0.0)
     position_y: Mapped[float] = mapped_column(Float, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # state="blocked"의 이유 (CONDITION.detail, 이슈 #50). 상태만으로는 화면에
+    # "멈춤"이라고만 뜨고 왜 멈췄는지 알 수 없어, 관리자가 RESUME을 눌러도 되는
+    # 상황인지 판단할 근거가 없다. blocked가 풀리면 None으로 되돌린다.
+    blocked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 # "아직 끝나지 않은" ShortageEvent 상태. 라인당 동시에 하나만 진행되어야 한다
