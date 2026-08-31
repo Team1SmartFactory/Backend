@@ -22,6 +22,7 @@ from app.api.schemas import (
     SnapshotOut,
 )
 from app.core.orchestrator import cancel_job, recompute_line_rollup, start_job
+from app.core.readiness import check_line_ready
 from app.core.registry import registry
 from app.store.db import get_session
 from app.store.models import (
@@ -173,10 +174,42 @@ async def approve_shortage_event(
     if event.status != "pending_approval":
         raise HTTPException(status_code=409, detail=_duplicate_action_detail(event))
 
-    event.status = "dispatched"
-    event.approved_by = body.approved_by
-    event.approved_at = datetime.now(timezone.utc)
+    # 승인은 "보충해도 좋다"는 사람의 판단이지, 보충이 가능하다는 보장이 아니다.
+    # 창고에 부품이 없거나 비글이 보관소에 없으면 팔은 허공을 집는다 — 이 시점의
+    # 카메라가 그걸 안다(이슈 #47, COMMAND_SCHEMA.md §10.3).
+    #
+    # 이벤트는 pending_approval로 남긴다: 사람이 부품을 채워 넣고 같은 알림에서
+    # 다시 승인할 수 있어야 한다. 승인을 소비해 버리면 알림이 사라져서, 정작
+    # 준비가 끝난 뒤에 아무도 그 칸을 보충하지 않는다.
+    verdict = check_line_ready(event.line_id)
+    if not verdict.ready:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "보관소가 준비되지 않아 보충을 시작할 수 없습니다",
+                "reasons": verdict.reasons,
+                "checks": verdict.checks,
+            },
+        )
+
+    # 상태 전이를 조건부 UPDATE로 한다 — 위의 읽기 검사만으로는 동시에 들어온 두
+    # 승인이 둘 다 통과한다. 2026-08-31 실제로 발생: 6초 간격으로 PICK_LOAD가 두 번
+    # 나갔고, 팔은 첫 번째를 수행했는데 브리지는 두 번째를 기다려서 작업이 교착됐다
+    # (브리지의 대기 커맨드는 로봇당 하나뿐이라 나중 것이 앞의 것을 덮는다).
+    approved_at = datetime.now(timezone.utc)
+    changed = (
+        db.query(ShortageEvent)
+        .filter(ShortageEvent.id == event_id, ShortageEvent.status == "pending_approval")
+        .update(
+            {"status": "dispatched", "approved_by": body.approved_by, "approved_at": approved_at},
+            synchronize_session=False,
+        )
+    )
     db.commit()
+    if changed == 0:
+        db.refresh(event)
+        raise HTTPException(status_code=409, detail=_duplicate_action_detail(event))
+    db.refresh(event)
 
     start_job(db, event)  # 1단계(PICK_LOAD) 발행. 이후 진행은 app/core/orchestrator.py가 담당.
 

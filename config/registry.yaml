@@ -26,9 +26,9 @@ lines:
     x: 19.6
     y: 29.5
     simulated: false # 실기
-    # 실물 로봇팔(omxf-line-01, station_b)이 닿을 수 있는 칸 4개 — 각 칸에 서로
-    # 다른 부품이 적재된다. label은 Hardware topic_map.py의 PART_TO_BIN이 참조하는
-    # 물리 칸 이름(bin_a~d)과 맞춰야 한다.
+    # 칸 4개 — 각 칸에 서로 다른 부품이 적재된다. label은 Hardware topic_map.py의
+    # PART_TO_BIN이 참조하는 물리 칸 이름(bin_a~d)과 맞춰야 한다.
+    # 칸마다 담당 팔이 다르다(robotId): a/b는 station_b의 팔, c/d는 station_c의 팔.
     bins:
       - binId: line-a-bin-a
         label: a
@@ -36,24 +36,28 @@ lines:
         partName: "M6 볼트 세트"
         capacity: 50
         thresholdRatio: 0.05
+        robotId: omxf-line-01
       - binId: line-a-bin-b
         label: b
         partId: P-102
         partName: "M8 너트 세트"
         capacity: 50
         thresholdRatio: 0.05
+        robotId: omxf-line-01
       - binId: line-a-bin-c
         label: c
         partId: P-103
         partName: "베어링 6202"
         capacity: 50
         thresholdRatio: 0.05
+        robotId: omxf-line-07
       - binId: line-a-bin-d
         label: d
         partId: P-104
         partName: "스프링 와셔 세트"
         capacity: 50
         thresholdRatio: 0.05
+        robotId: omxf-line-07
   - lineId: line-b
     name: "B라인"
     partId: P-002
@@ -106,6 +110,16 @@ robots:
     lineId: line-a
     simulated: false
   - robotId: omxf-line-01
+    role: LINE_ARM
+    lineId: line-a
+    simulated: false
+  # 두 번째 라인 팔 (PC2의 station_c). line-a의 칸 넷은 팔 하나가 다 닿지 않아서
+  # 셀 박스를 사이에 두고 마주 본 팔 둘이 두 칸씩 맡는다 — 어느 팔이 어느 칸을
+  # 맡는지는 위 bins[].robotId가 정한다.
+  # ⚠️ 이름이 07인 이유: Hardware 문서가 예약해 둔 omxf-line-02는 아래 시뮬
+  # line-b의 팔이 이미 쓰고 있다. robotId는 전역 유일해야 하고, 겹치면 line-b로
+  # 간 커맨드가 실물 팔을 움직인다.
+  - robotId: omxf-line-07
     role: LINE_ARM
     lineId: line-a
     simulated: false

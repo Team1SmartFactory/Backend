@@ -118,10 +118,28 @@ class Inventory(MessageBase):
     status: InventoryStatus
     source: InventorySource
     cameraId: str
-    # 이슈 #37 예약 필드 — line-a처럼 칸(bin) 단위로 부품을 관리하는 라인의 칸을
-    # 식별한다. 카메라 캘리브레이션이 끝나 칸 단위 비전 연동이 붙기 전까지는
-    # 아무도 안 채운다(app/mqtt/handlers.py는 아직 이 필드를 읽지 않음).
+    # line-a처럼 칸(bin) 단위로 부품을 관리하는 라인의 칸(이슈 #37). 2026-08-31
+    # 칸 단위 비전이 붙으면서 실제로 채워지기 시작했다 — 이 필드가 있는 메시지는
+    # line/{lineId}/bin/{label}/inventory로 오고 handle_bin_inventory가 받는다.
     binId: str | None = None
+
+
+class Readiness(MessageBase):
+    """비전 -> 백엔드. station/{stationId}/readiness (COMMAND_SCHEMA.md §10.3).
+
+    승인된 보충을 실제로 시작해도 되는지를 스테이션 하나에 대해 답한다. 웹에서
+    승인이 떨어져도 창고에 부품이 없거나 비글이 베이에 없으면 팔이 허공을 집는다.
+    retain=true라 승인 요청을 받은 그 순간의 최신값을 바로 읽을 수 있다.
+    """
+
+    type: Literal["READINESS"] = "READINESS"
+    stationId: str
+    ready: bool
+    # 무엇이 없어서 ready=false인지 — 사용자에게 "창고가 비었습니다"를 보여주려면
+    # 결론만으로는 부족하다. 키는 발행자가 정한다(현재 "beagle", "part").
+    checks: dict[str, bool] = Field(default_factory=dict)
+    source: str | None = None
+    cameraId: str | None = None
 
 
 class Job(MessageBase):

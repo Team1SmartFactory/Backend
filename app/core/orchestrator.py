@@ -95,6 +95,7 @@ def _build_step(event: ShortageEvent, step: int) -> tuple[str, RobotRole, Comman
     if line_config is None:
         return None
 
+    bin_config = None
     if event.bin_id is not None:
         bin_config = registry.get_bin(event.bin_id)
         if bin_config is None:
@@ -118,7 +119,14 @@ def _build_step(event: ShortageEvent, step: int) -> tuple[str, RobotRole, Comman
     else:
         return None
 
-    robot_id = _robot_for_role(event.line_id, role)
+    # 하역(3단계)만은 라인이 아니라 칸이 팔을 정한다. line-a의 칸 넷은 팔 하나가
+    # 다 닿지 않는다 — 셀 박스를 사이에 두고 마주 본 팔 둘이 각각 두 칸씩 맡는다
+    # (2026-08-31, station_b가 a/b, station_c가 c/d). 라인의 첫 LINE_ARM을 그냥
+    # 고르면 c/d로 갈 부품이 닿지도 않는 팔에게 간다.
+    if action is CommandAction.UNLOAD_RESUME and bin_config is not None and bin_config.robotId:
+        robot_id = bin_config.robotId
+    else:
+        robot_id = _robot_for_role(event.line_id, role)
     if robot_id is None:
         return None
     return robot_id, role, action, payload
@@ -301,6 +309,10 @@ def advance_job(db: Session, event: ShortageEvent, completed_command_id: str) ->
         if event.bin_id is not None:
             bin_row = db.get(Bin, event.bin_id)
             if bin_row is not None:
+                # status만 되돌리고 current_qty는 건드리지 않는다. 팔이 놓았다는
+                # 것과 칸이 실제로 찼다는 것은 다른 사실이고, 후자는 카메라만
+                # 안다 — 칸 단위 INVENTORY(handle_bin_inventory)가 곧 채운다.
+                # 여기서 임의의 수치로 채우면 부품이 굴러떨어져도 화면은 정상이다.
                 bin_row.status = "normal"
                 db.commit()
             recompute_line_rollup(db, event.line_id)
