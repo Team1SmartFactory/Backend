@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     ApproveRequest,
     BinOut,
+    BinUpdateOut,
     CameraOut,
     DetectionFeedbackOut,
     DetectionFeedbackRequest,
@@ -159,6 +160,22 @@ def _line_update_out(line: Line) -> LineUpdateOut:
     )
 
 
+def _bin_update_out(bin_row: Bin) -> BinUpdateOut:
+    """WebSocket line.bin.inventory용 부분 데이터 (이슈 #51).
+
+    승인~완료 동안 카메라는 칸 인벤토리를 발행하지 않는다 — 변화가 있을 때만
+    발행하는데 보충 중의 칸은 계속 비어 있다. 그래서 REST 쪽에서 칸 상태를
+    바꿀 때는 여기서 직접 방송해야 프론트의 칸이 '보충 중'으로 넘어간다.
+    """
+    return BinUpdateOut(
+        line_id=bin_row.line_id,
+        bin_id=bin_row.id,
+        current_qty=bin_row.current_qty,
+        status=bin_row.status,
+        updated_at=bin_row.updated_at,
+    )
+
+
 def _duplicate_action_detail(event: ShortageEvent) -> str:
     """중복 승인/반려 시 반환할 한국어 에러 메시지 (API_LIST.md 12.1 확정 사항: 409 거부)."""
     return "이미 반려된 요청입니다" if event.status == "rejected" else "이미 승인된 요청입니다"
@@ -221,6 +238,14 @@ async def approve_shortage_event(
     # 않는다 — 잡히지도 않은 작업 때문에 라인이 restocking에 고착되는 걸 막는다.
     if event.status == "dispatched":
         line = _transition_to_restocking(db, event)
+        # 칸 단위 이벤트면 그 칸의 restocking 전이도 방송한다 (이슈 #51) — 라인
+        # 롤업만 보내면 평면도·칸 카드의 개별 칸은 '부족'에 그대로 머문다.
+        if event.bin_id is not None:
+            bin_row = db.get(Bin, event.bin_id)
+            if bin_row is not None:
+                await hub.broadcast(
+                    {"type": "line.bin.inventory", "payload": _bin_update_out(bin_row).model_dump(by_alias=True)}
+                )
         if line is not None:
             await hub.broadcast(
                 {"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)}
@@ -411,6 +436,9 @@ async def override_bin_stock(
             # 세션 identity map 덕에 bin_row는 이 안에서 바뀐 값을 그대로 반영한다
             # (같은 세션·같은 PK라 db.get(Bin, event.bin_id)가 같은 객체를 반환).
             _transition_to_restocking(db, event)
+            await hub.broadcast(
+                {"type": "line.bin.inventory", "payload": _bin_update_out(bin_row).model_dump(by_alias=True)}
+            )
 
         line = recompute_line_rollup(db, line_id)
         await hub.broadcast({"type": "line.shortage", "payload": _shortage_event_out(event).model_dump(by_alias=True)})
@@ -434,6 +462,9 @@ async def override_bin_stock(
     bin_row.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=REJECT_COOLDOWN_SECONDS)
     db.commit()
 
+    await hub.broadcast(
+        {"type": "line.bin.inventory", "payload": _bin_update_out(bin_row).model_dump(by_alias=True)}
+    )
     line = recompute_line_rollup(db, line_id)
     if line is not None:
         await hub.broadcast({"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)})

@@ -248,6 +248,27 @@ def _issue_step(db: Session, event: ShortageEvent, step: int) -> bool:
     return True
 
 
+def _reset_restocking(db: Session, event: ShortageEvent) -> None:
+    """실패로 닫힌 이벤트가 승인 때 걸어둔 restocking(보충 중, 파랑)을 되돌린다 (이슈 #51).
+
+    되돌리지 않으면 화면의 칸은 '보충 중'에 영원히 머문다 — 카메라는 변화가 있을
+    때만 칸 인벤토리를 발행하는데, 실패한 보충의 칸은 빈 채로 아무 변화가 없다.
+    current_qty는 건드리지 않는다: 칸이 실제로 얼마나 비었는지는 카메라만 안다.
+    """
+    if event.bin_id is not None:
+        bin_row = db.get(Bin, event.bin_id)
+        if bin_row is not None and bin_row.status == "restocking":
+            bin_row.status = "normal"
+            db.commit()
+        recompute_line_rollup(db, event.line_id)
+        return
+
+    line = db.get(Line, event.line_id)
+    if line is not None and line.status == "restocking":
+        line.status = "normal"
+        db.commit()
+
+
 def _fail_unpublishable(db: Session, event: ShortageEvent) -> None:
     """MQTT 브로커 연결이 끊긴 상태라 커맨드를 발행조차 못 했을 때 즉시 실패 처리한다.
 
@@ -259,6 +280,7 @@ def _fail_unpublishable(db: Session, event: ShortageEvent) -> None:
         return
     event.status = "rejected"
     db.commit()
+    _reset_restocking(db, event)
 
 
 def _schedule_timeout_watch(event_id: str, command_id: str, timeout_sec: int) -> None:
@@ -316,6 +338,23 @@ async def _watch_timeout(event_id: str, command_id: str, timeout_sec: int) -> No
         if event is None:
             return
         fail_job(session, event, command_id)
+
+        # 타임아웃은 MQTT 수신 스레드 밖(이 코루틴)에서 실패를 합성하므로,
+        # handle_status의 변화 감지-방송 경로를 타지 않는다. 여기서 직접 방송하지
+        # 않으면 새로고침 전까지 화면은 '보충 중'인 채 멈춘다 (이슈 #51).
+        if event.status == "rejected":
+            # 지역 임포트: handlers가 이 모듈을 임포트하므로 모듈 수준이면 순환이다.
+            from app.mqtt.handlers import _bin_message, _line_message, _shortage_event_message
+            from app.ws.hub import hub
+
+            await hub.broadcast(_shortage_event_message(event))
+            line = session.get(Line, event.line_id)
+            if line is not None:
+                await hub.broadcast(_line_message(line))
+            if event.bin_id is not None:
+                bin_row = session.get(Bin, event.bin_id)
+                if bin_row is not None:
+                    await hub.broadcast(_bin_message(bin_row))
     finally:
         session.close()
 
@@ -426,6 +465,7 @@ def fail_job(db: Session, event: ShortageEvent, failed_command_id: str) -> None:
     db.commit()
     if result.rowcount:
         event.status = "rejected"  # 세션에 이미 로드된 객체도 맞춰준다 (호출자가 이어서 참조)
+        _reset_restocking(db, event)
 
 
 def sweep_stale_active_events(db: Session) -> None:

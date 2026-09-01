@@ -275,6 +275,11 @@ def handle_status(status: Status) -> list[dict]:
                 before_event_status = event.status
                 line = session.get(Line, event.line_id)
                 before_line_status = line.status if line is not None else None
+                # 칸 단위 이벤트면 칸 상태 변화도 감지한다 (이슈 #51) — 3단계 완료가
+                # 칸을 restocking -> normal로 되돌리는데, 이걸 방송하지 않으면 평면도의
+                # 칸은 카메라가 채움을 확인해 줄 때까지 '보충 중'(파랑)에 머문다.
+                bin_row = session.get(Bin, event.bin_id) if event.bin_id else None
+                before_bin_status = bin_row.status if bin_row is not None else None
 
                 if status.state == RobotState.DONE:
                     advance_job(session, event, status.commandId)
@@ -290,6 +295,8 @@ def handle_status(status: Status) -> list[dict]:
 
                 if event.status != before_event_status:
                     messages.append(_shortage_event_message(event))
+                if bin_row is not None and bin_row.status != before_bin_status:
+                    messages.append(_bin_message(bin_row))
                 if line is not None and line.status != before_line_status:
                     messages.append(_line_message(line))
 
