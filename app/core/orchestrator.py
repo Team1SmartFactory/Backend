@@ -141,8 +141,10 @@ def recompute_line_rollup(db: Session, line_id: str) -> Line | None:
     안전하다(이슈 #37 이전과 동일하게 동작).
 
     status: 칸 하나라도 restocking이면 라인도 restocking.
-    current_qty: 칸들 중 최솟값 — 프론트 statusTone.ts가 current_qty vs threshold
-    비교로만 색을 정하므로, 가장 급한 칸 기준으로 라인 뱃지 색이 정해지게 한다.
+    current_qty: 칸들의 평균 — 부품이 네 섹터에 나뉘어 있으므로 칸 하나가 라인의
+    25%다(이슈 #53). 한 칸이 비면 75%지 0%가 아니다. 처음엔 최솟값(가장 급한 칸
+    기준의 뱃지 색)이었지만, 긴급도는 이미 칸 색과 부족 이벤트 LED가 칸 단위로
+    보여주고 있어서 라인 수치까지 최솟값일 이유가 없었다.
     """
     line = db.get(Line, line_id)
     if line is None:
@@ -151,7 +153,7 @@ def recompute_line_rollup(db: Session, line_id: str) -> Line | None:
     if not bins:
         return line
     line.status = "restocking" if any(b.status == "restocking" for b in bins) else "normal"
-    line.current_qty = min(b.current_qty for b in bins)
+    line.current_qty = sum(b.current_qty for b in bins) / len(bins)
     db.commit()
     return line
 
