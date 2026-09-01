@@ -298,6 +298,104 @@ async def reject_shortage_event(event_id: str, db: Session = Depends(get_db)) ->
     return event_out
 
 
+@router.post("/shortage-events/{event_id}/restock", response_model=ShortageEventOut)
+async def restock_rejected_event(
+    event_id: str, body: ApproveRequest, db: Session = Depends(get_db)
+) -> ShortageEventOut:
+    """반려했던 부족 건을 되살려 바로 보충을 지시한다 (이슈 #55).
+
+    반려된 건은 대시보드 알림란에 '최종 확인' 항목으로 남는다. 사람이 실수로
+    반려했거나 뒤늦게 부족이 맞다고 판단했을 때, 새 감지를 기다릴 수 없다 —
+    반려가 걸어둔 쿨다운 동안 카메라 재감지도 눌려 있다. 그래서 그 자리에서
+    같은 건을 다시 진행할 길이 필요하다.
+
+    승인(approve)과 같은 관문·전이·방송을 그대로 거친다: 준비 확인(창고 부품·
+    비글 카메라 판정) → 원자적 상태 전이(rejected -> dispatched) → 1단계 발행 →
+    restocking 전이 방송. 다른 점은 출발 상태 하나뿐이다.
+    """
+    event = db.get(ShortageEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="해당 부족 이벤트를 찾을 수 없습니다")
+
+    if event.status != "rejected":
+        raise HTTPException(status_code=409, detail="반려된 건만 다시 진행할 수 있습니다")
+
+    verdict = check_line_ready(event.line_id)
+    if not verdict.ready:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "보관소가 준비되지 않아 보충을 시작할 수 없습니다",
+                "reasons": verdict.reasons,
+                "checks": verdict.checks,
+            },
+        )
+
+    # approve와 같은 이유의 원자 전이: 같은 알림에서 두 번 눌리면 PICK_LOAD가
+    # 두 번 나가 브리지의 단일 대기 커맨드가 교착된다(2026-08-31 실측).
+    approved_at = datetime.now(timezone.utc)
+    changed = (
+        db.query(ShortageEvent)
+        .filter(ShortageEvent.id == event_id, ShortageEvent.status == "rejected")
+        .update(
+            {"status": "dispatched", "approved_by": body.approved_by, "approved_at": approved_at},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    if changed == 0:
+        db.refresh(event)
+        raise HTTPException(status_code=409, detail=_duplicate_action_detail(event))
+    db.refresh(event)
+
+    start_job(db, event)  # 즉시 실패하면 event.status가 rejected로 되돌아간다
+
+    if event.status == "dispatched":
+        line = _transition_to_restocking(db, event)
+        if event.bin_id is not None:
+            bin_row = db.get(Bin, event.bin_id)
+            if bin_row is not None:
+                await hub.broadcast(
+                    {"type": "line.bin.inventory", "payload": _bin_update_out(bin_row).model_dump(by_alias=True)}
+                )
+        if line is not None:
+            await hub.broadcast(
+                {"type": "line.inventory", "payload": _line_update_out(line).model_dump(by_alias=True)}
+            )
+
+    event_out = _shortage_event_out(event)
+    await hub.broadcast({"type": "line.shortage", "payload": event_out.model_dump(by_alias=True)})
+    return event_out
+
+
+@router.delete("/shortage-events/{event_id}")
+async def delete_rejected_event(event_id: str, db: Session = Depends(get_db)) -> dict:
+    """반려로 닫힌 부족 건을 완전히 지운다 (이슈 #55 — 알림란의 '삭제').
+
+    반려 상태의 건만 지울 수 있다. 진행 중(활성)이나 완료된 건을 지우면
+    로봇이 움직인 근거가 화면과 이력에서 사라진다. 지운 사실은
+    line.shortage.removed로 방송해, 스냅샷을 다시 받지 않는 다른 화면의
+    캐시에서도 즉시 빠지게 한다.
+    """
+    event = db.get(ShortageEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="해당 부족 이벤트를 찾을 수 없습니다")
+
+    if event.status != "rejected":
+        raise HTTPException(status_code=409, detail="반려된 건만 삭제할 수 있습니다")
+
+    # 학습 라벨(DetectionFeedbackRecord)이 이 이벤트를 FK로 가리킬 수 있다 —
+    # 라벨 자체는 반려 판정의 기록이라 남기고, 참조만 끊는다.
+    db.query(DetectionFeedbackRecord).filter(
+        DetectionFeedbackRecord.shortage_event_id == event_id
+    ).update({"shortage_event_id": None}, synchronize_session=False)
+    db.delete(event)
+    db.commit()
+
+    await hub.broadcast({"type": "line.shortage.removed", "payload": {"id": event_id}})
+    return {"id": event_id}
+
+
 @router.put("/lines/{line_id}/stock", response_model=LineOut)
 async def override_line_stock(
     line_id: str, body: LineStockOverrideRequest, db: Session = Depends(get_db)
