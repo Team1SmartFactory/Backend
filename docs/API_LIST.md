@@ -1,8 +1,9 @@
 # API 목록
 
-> **상태: 최종 반영본 (프론트 실물 코드 대조, 2026-08-04).** 프론트가 리팩터링된 실제 코드와 대조해 이전 초안의 오류·구식 정보를 정정한 버전. 계약(1~7장)은 이전과 동일하게 유효하고, **9장(승인권한/카메라/재고이력)은 "나중에"가 아니라 프론트 구현이 이미 끝나 즉시 붙는 상태**, **인증(구 9.1)은 완전 폐기**로 바뀜.
+> **상태: 최종 반영본 (프론트 실물 코드 대조, 2026-08-04 / 14~16장 추가 2026-09-01).** 프론트가 리팩터링된 실제 코드와 대조해 이전 초안의 오류·구식 정보를 정정한 버전. 계약(1~7장)은 이전과 동일하게 유효하고, **9장(승인권한/카메라/재고이력)은 "나중에"가 아니라 프론트 구현이 이미 끝나 즉시 붙는 상태**, **인증(구 9.1)은 완전 폐기**로 바뀜.
 > zod 스키마 검증이 엄격해서 **필드 누락·타입 변경·enum 값 추가는 즉시 프론트 장애**입니다. 필드 추가만 안전.
 > 12장의 미결 사항 3건(중복 승인 처리/WS 재연결/카메라 MJPEG 세부)도 전부 결정 완료.
+> 🆕 **14~16장**: line-a 칸(bin) 단위 자동 부족 감지 + 승인 전 보관소(station) 준비 확인 게이팅, 로봇 blocked/resume, 반려 건 재처리(재보충/삭제) — 전부 구현·테스트·**실물 로봇/카메라 검증 완료** (이슈 #37/#47/#50/#55).
 
 ---
 
@@ -70,6 +71,28 @@
 | `status` | `LineStatus` | ✅ | ✅ | `normal` \| `restocking` |
 | `updatedAt` | string | ✅ | ✅ | ISO 8601 |
 | `position` | `{x,y}` | ✅ | — | 평면도 좌표 (0~100) |
+| `bins` | `Bin[]` | 🆕 ✅ (빈 배열 가능) | — | line-a처럼 칸 단위로 관리되는 라인만 채워짐 — 3.2a 참고 (이슈 #37) |
+
+> 🆕 **bins가 있는 라인은 `status`/`currentQty`가 그 칸들의 롤업 값이다** — 칸 하나라도 `restocking`이면 라인도 `restocking`, `currentQty`는 칸들의 평균(칸 하나가 라인의 25%). 기존 프론트 코드는 안 건드려도 그대로 동작함(칸이 없으면 이전과 동일하게 라인 자체 값).
+
+### 3.2a Bin 🆕 (이슈 #37)
+
+라인 안의 부품 적재 위치(칸). line-a만 4칸(a/b/c/d, 부품 4종)을 가지며 다른 라인은 빈 배열.
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `id` | string | ✅ | 칸 식별자 (예: `line-a-bin-a`) |
+| `lineId` | string | ✅ | 소속 라인 |
+| `label` | string | ✅ | 칸 이름 (`a`\|`b`\|`c`\|`d`) |
+| `partId` | string | ✅ | 적재 부품 ID |
+| `partName` | string | ✅ | 적재 부품명 |
+| `capacity` | number | ✅ | 칸 용량 |
+| `threshold` | number | ✅ | 부족 판정 임계치 (%) |
+| `currentQty` | number | ✅ | 현재 적재 면적 비율 (0~100) |
+| `status` | `LineStatus` | ✅ | `normal` \| `restocking` — 5장 enum과 동일 |
+| `updatedAt` | string | ✅ | ISO 8601 |
+
+WebSocket 부분 갱신은 `line.bin.inventory`(4장) — `lineId`/`binId`/`currentQty`/`status`/`updatedAt`만 담은 `BinUpdate`.
 
 ### 3.3 ShortageEvent
 
@@ -77,6 +100,7 @@
 |---|---|---|---|
 | `id` | string | ✅ | 이벤트 식별자 |
 | `lineId` | string | ✅ | 발생 라인 |
+| `binId` | string | ⬜ | 🆕 bins가 있는 라인의 이벤트만 채워짐(칸 단위 감지) — 없으면 라인 단위 이벤트 (이슈 #37) |
 | `detectedAt` | string | ✅ | 감지 시각 |
 | `status` | `ShortageEventStatus` | ✅ | 5장 enum |
 | `partName` | string | ✅ | 부족 부품명 (예: M6 볼트 세트) |
@@ -90,10 +114,11 @@
 |---|---|---|---|
 | `robotId` | string | ✅ | 예: `beagle-1`, `omxf-line-a` |
 | `type` | `RobotType` | ✅ | 5장 enum |
-| `state` | `RobotState` | ✅ | 5장 enum |
+| `state` | `RobotState` | ✅ | 5장 enum — 🆕 `blocked` 추가 (이슈 #50) |
 | `currentTaskId` | string | ⬜ | **`jobId`로 확정.** 개별 커맨드(`commandId`) 아님 — 로봇의 세부 동작 상태는 `RobotState`(`moving`/`working`)로 이미 표현되므로, 이 필드는 `ShortageEvent`(보충 작업 전체)와 로봇을 연결하는 용도 |
 | `position` | `{x,y}` | ✅ | 0~100 |
 | `updatedAt` | string | ✅ | |
+| `blockedReason` | string | ⬜ | 🆕 `state === "blocked"`일 때 왜 멈췄는지(사람이 읽을 문구). blocked가 아니면 항상 `null` (이슈 #50) |
 
 > 🆕 프론트는 로봇 id를 `omxf-{lineId}` 같은 규칙으로 가정하지 않고 `robots` 배열을 그대로 렌더링함 — **id 명명 규칙은 백엔드 자유.**
 
@@ -112,7 +137,9 @@
 |---|---|---|---|
 | `line.inventory` | `LineUpdate` | 라인 재고 면적 변할 때마다 | `line/{id}/inventory` |
 | `line.shortage` | `ShortageEvent` | 부족 감지 + 이후 모든 상태 전이 시 | `line/{id}/shortage` (신규 — 6장) |
-| `robot.status` | `RobotStatus` | 로봇 상태·위치 변할 때마다 | `robot/{id}/status`, `/telemetry` |
+| `robot.status` | `RobotStatus` | 로봇 상태·위치·`blocked` 변할 때마다 | `robot/{id}/status`, `/telemetry`, `/condition` 🆕 |
+| `line.bin.inventory` 🆕 | `BinUpdate` (`lineId`/`binId`/`currentQty`/`status`/`updatedAt`) | 칸 재고 면적 변할 때 + 승인~완료 사이 상태 전이 시 | `line/{lineId}/bin/{label}/inventory` (이슈 #37, #51) |
+| `line.shortage.removed` 🆕 | `{ id: string }` | 반려된 부족 건이 삭제됐을 때(`DELETE /shortage-events/{id}`) | 없음 — REST 삭제 결과 방송 (이슈 #55) |
 
 - `robot.status.position` 변경 시 프론트는 1초 transition으로 부드럽게 이동 애니메이션 처리 → **Beagle 위치 갱신 주기 1초 내외 권장** (COMMAND_SCHEMA의 TELEMETRY 1~5Hz보다 낮음 — 6장 참고).
 - ⚠️ **`line.inventory`는 `/snapshot`에 이미 있는 라인에만 발행.** `LineUpdate`는 `name`/`position`이 없는 부분 데이터라, 스냅샷에 없던 라인이 여기로 먼저 등장하면 프론트 캐시에 빈 필드가 생김 (2장 참고).
@@ -134,7 +161,7 @@
 | `RobotType` | `beagle` | Beagle |
 | | `omxf_storage` | OMX-F 보관소 |
 | | `omxf_line` | OMX-F 라인 |
-| `RobotState` | `idle` \| `moving` \| `working` \| `error` \| `offline` | |
+| `RobotState` | `idle` \| `moving` \| `working` \| `error` \| `offline` \| `blocked` 🆕 | `blocked`: 작업 실패한 팔이 스스로 대기 자세로 물러나 더 이상 지시를 안 받는 상태. `error`와 구분하는 이유는 사람이 할 일이 다르기 때문 — `error`는 현장을 봐야 하지만 `blocked`는 원인만 확인하고 `POST /robots/{id}/resume`을 누르면 다시 돈다 (이슈 #50, 16장) |
 
 ---
 
@@ -303,6 +330,7 @@ currentQty <= threshold * 2.5  → 노란색
    raise HTTPException(404, detail="해당 부족 이벤트를 찾을 수 없습니다")
    ```
 4. FastAPI 기본 422 검증 오류는 `detail`이 배열(`[{loc, msg, type}]`)로 내려옴 — 프론트가 `msg`만 뽑아 표시하므로 **커스텀 422 핸들러로 형식을 바꾸지 말 것.**
+5. 🆕 **예외: 보관소 준비 확인 실패(16장 참고)만 `detail`이 문자열이 아니라 객체로 옴** — `{ "message": string, "reasons": string[], "checks": Record<string, boolean> }`. 3번 규칙(문자열 강제)의 유일한 예외이며, `approve`/`restock` 두 엔드포인트에만 해당.
 
 **WebSocket**
 
@@ -355,3 +383,53 @@ currentQty <= threshold * 2.5  → 노란색
 | 아키텍처·역할 | `DEVELOPMENT_ROADMAP.md` 4장 |
 | 백엔드 폴더 구조·설계 | `WEB_DEVELOPMENT.md` 3장 |
 | 프론트 연동 절차 상세 | `docs/FRONTEND-INTEGRATION.md` |
+
+---
+
+## 14. ✅ 구현 완료 — 칸(bin) 단위 자동 부족 감지 + 보관소 준비 확인 게이팅 (이슈 #37, #47)
+
+> 실물 카메라/로봇으로 검증 완료 (2026-09-01). "station"은 내부적으로만 쓰는 개념이라 REST/WS 계약에는 노출되지 않는다 — 프론트가 알아야 할 건 3.2a `Bin`과 아래 409뿐.
+
+**칸 단위 자동 감지**: line-a는 이제 부품 4종을 적재하는 칸(bin) 4개를 갖고, 각 칸이 독립적으로 부족해질 수 있다. 카메라(비전)가 칸별 재고를 인식해 MQTT로 보내면, 백엔드가 임계치 이하인 칸마다 `bin_id`를 채운 `ShortageEvent`를 **자동 생성**한다(사람 조작 없음) — `PUT /lines/{id}/bins/{binId}/stock`(관리자 수동 지정)과 같은 규칙을 공유하되 트리거만 다르다. 같은 라인의 다른 칸은 서로 영향을 주지 않는다(칸 A가 진행 중이어도 칸 B는 독립적으로 부족 이벤트가 생길 수 있음).
+
+| 기능 | Method | Path | Response |
+|---|---|---|---|
+| 라인의 칸 목록 조회 | GET | `/api/lines/{lineId}/bins` | `Bin[]` (bins 없는 라인은 빈 배열) |
+| 칸 현황 직접 지정 | PUT | `/api/lines/{lineId}/bins/{binId}/stock` | `Bin` — body는 `PUT /lines/{id}/stock`과 동일한 `LineStockOverrideRequest` |
+
+- bins가 있는 라인(line-a)에 기존 `PUT /lines/{id}/stock`을 그대로 호출하면 **400** + `"이 라인은 칸 단위로 관리됩니다. PUT /lines/{id}/bins/{binId}/stock을 사용하세요"` — 프론트는 `Line.bins.length > 0`으로 분기해서 어느 API를 쓸지 판단해야 함.
+
+**보관소 준비 확인 게이팅**: 승인이 떨어져도 창고에 부품이 없거나 운반 로봇(비글)이 보관소 베이에 없으면 로봇팔이 허공을 집는다. 그래서 `POST /shortage-events/{id}/approve`(2장)와 `POST /shortage-events/{id}/restock`(16장)은 **실제 전이 직전에 이 확인을 통과해야** 진행된다.
+
+- 통과 못 하면 **409**, `detail`은 문자열이 아니라 객체(11장 5번 참고):
+  ```json
+  { "message": "보관소가 준비되지 않아 보충을 시작할 수 없습니다",
+    "reasons": ["창고에 부품이 없습니다", "운반 로봇이 보관소에 없습니다"],
+    "checks": { "part": false, "beagle": false } }
+  ```
+- 이벤트는 `pending_approval`(또는 `rejected`)로 그대로 남는다 — 소비되지 않으므로, 사람이 부품을 채우고 나서 **같은 알림에서 다시 승인**하면 된다.
+- ⚠️ **비전 신호를 한 번도 못 받은 상태(비전 미연동 환경·시뮬 라인)에서는 이 게이트가 무조건 통과된다(fail-open)** — "모른다"와 "준비 안 됐다"를 구분해서, 비전이 없는 개발/시연 환경에서 모든 승인이 막히지 않게 한 의도된 동작. line-a 외 라인(b~f)은 애초에 이 게이트 대상이 아니다(시뮬 라인이라 항상 통과).
+
+## 15. ✅ 구현 완료 — 로봇 blocked/resume (이슈 #50)
+
+작업에 실패한 로봇팔이 스스로 멈춰(`state: "blocked"`) 더 이상 지시를 안 받는 상태를 다룬다. 5장 `RobotState`에 `blocked` 추가, 3.4 `RobotStatus`에 `blockedReason` 추가.
+
+| 기능 | Method | Path | Response |
+|---|---|---|---|
+| 멈춘 로봇 복구 | POST | `/api/robots/{robotId}/resume` | `RobotStatus` |
+
+- **응답의 `state`는 여전히 `"blocked"`로 온다 — 이게 정상이다.** 이 엔드포인트는 로봇에 RESUME 커맨드를 발행만 할 뿐 DB 상태를 낙관적으로 바꾸지 않는다. 실제로 풀렸는지는 로봇만 알고, 그 결과가 뒤이은 `robot.status`(WS) 브로드캐스트로 `state: "idle"`, `blockedReason: null`로 반영된다. 그래서 두 번 눌러도 안전함(RESUME이 한 번 더 나갈 뿐).
+- `blocked`가 아닌 로봇에 호출해도 409를 내지 않는다 — 화면의 blocked 표시가 늦거나 놓칠 수 있어서, 항상 재시도 가능해야 함.
+- 없는 로봇이면 404.
+
+## 16. ✅ 구현 완료 — 반려 건 재처리: 재보충/삭제 (이슈 #55)
+
+반려(`rejected`)된 부족 건은 알림란에 "최종 확인" 항목으로 남는다. 사람이 실수로 반려했거나 뒤늦게 부족이 맞다고 판단했을 때, 반려 쿨다운(60초) 때문에 새 감지를 기다릴 필요 없이 그 자리에서 다시 처리할 수 있게 한다.
+
+| 기능 | Method | Path | Request | Response |
+|---|---|---|---|---|
+| 반려 건 다시 보충 | POST | `/api/shortage-events/{id}/restock` | `{ "approvedBy": string }` (`ApproveRequest`와 동일) | `ShortageEvent` |
+| 반려 건 삭제 | DELETE | `/api/shortage-events/{id}` | — | `{ "id": string }` |
+
+- `restock`은 `approve`와 **완전히 같은 관문·전이·방송**을 탄다(14장의 준비 확인 게이팅 포함) — 차이는 출발 상태가 `rejected`라는 것뿐. `rejected`가 아닌 이벤트에 호출하면 409.
+- `delete`는 `rejected` 상태인 이벤트만 지울 수 있다(진행 중·완료 건은 삭제 불가 — 409 `"반려된 건만 삭제할 수 있습니다"`). 삭제되면 `line.shortage.removed`(4장)로 다른 화면 캐시에서도 즉시 제거되게 방송한다. 이 이벤트를 참조하던 학습 라벨(`DetectionFeedback`, 9.4)은 참조만 끊고 레코드 자체는 보존.

@@ -48,25 +48,28 @@ def test_approve_dispatches_and_publishes_command(monkeypatch):
 
     event_id = _create_pending_event()
 
+    # 승인과 스냅샷 조회를 같은 TestClient 컨텍스트 안에서 한다 — with 블록을 새로 열면
+    # lifespan이 다시 실행돼 sweep_stale_active_events(앱 재시작 시 고착 이벤트 정리,
+    # CONNECTION_PLAN.md Phase 1-7)가 방금 승인한 이벤트를 "재시작 전에 응답 못 받고
+    # 고착된 이벤트"로 오인해 실패 처리해버린다 — 실제 재시작이 아닌데도 그렇게 된다.
     with TestClient(app) as client:
         response = client.post(f"/api/shortage-events/{event_id}/approve", json={"approvedBy": "관리자"})
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "dispatched"
-    assert data["approvedBy"] == "관리자"
-    assert data["approvedAt"] is not None
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "dispatched"
+        assert data["approvedBy"] == "관리자"
+        assert data["approvedAt"] is not None
 
-    # PICK_LOAD 커맨드가 보관소 OMX-F 토픽으로 발행됐는지 확인
-    assert len(published) == 1
-    topic, payload = published[0]
-    assert topic == "robot/omxf-storage-01/cmd"
-    assert payload["action"] == "PICK_LOAD"
-    assert payload["payload"]["lineId"] == "line-a"
-    assert payload["payload"]["qty"] == 47
+        # PICK_LOAD 커맨드가 보관소 OMX-F 토픽으로 발행됐는지 확인
+        assert len(published) == 1
+        topic, payload = published[0]
+        assert topic == "robot/omxf-storage-01/cmd"
+        assert payload["action"] == "PICK_LOAD"
+        assert payload["payload"]["lineId"] == "line-a"
+        assert payload["payload"]["qty"] == 47
 
-    # Line.status가 restocking으로 바뀌었는지 스냅샷으로 확인
-    with TestClient(app) as client:
+        # Line.status가 restocking으로 바뀌었는지 스냅샷으로 확인
         snapshot = client.get("/api/snapshot").json()
     line = next(line for line in snapshot["lines"] if line["id"] == "line-a")
     assert line["status"] == "restocking"
