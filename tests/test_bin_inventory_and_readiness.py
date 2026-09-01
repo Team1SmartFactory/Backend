@@ -109,6 +109,16 @@ def test_empty_bin_updates_qty_and_raises_one_pending_event():
     assert "line.shortage" in types  # 승인 팝업
 
 
+def test_line_qty_is_the_average_of_its_bins():
+    """부품이 네 섹터에 나뉘어 있으므로 칸 하나가 라인의 25%다 (이슈 #53).
+    최솟값 롤업이면 한 칸 빈 것만으로 라인 전체가 0%로 보인다."""
+    _reset()
+    messages = handle_bin_inventory(_inventory(BIN_A, 0.0))
+
+    line_updates = [m for m in messages if m["type"] == "line.inventory"]
+    assert line_updates and line_updates[0]["payload"]["currentQty"] == 75.0
+
+
 def test_refilled_bin_updates_qty_without_new_event():
     _reset()
     handle_bin_inventory(_inventory(BIN_A, 0.0))
