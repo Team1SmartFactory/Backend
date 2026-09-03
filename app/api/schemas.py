@@ -153,6 +153,25 @@ class PermissionsPayload(CamelModel):
     authorized_approvers: list[str]
 
 
+class KpiOut(CamelModel):
+    """GET /api/kpi 응답 (이슈 #59). 시스템 운영 지표 — 대시보드 KPI 카드가 쓴다.
+
+    평균값들은 해당 표본이 없으면 null이다. 0으로 채우면 "0초 만에 보충"이라는
+    거짓 지표가 화면에 뜬다.
+    """
+
+    total_detected: int
+    completed: int
+    failed: int
+    human_rejected: int
+    active: int
+    pending: int
+    success_rate: float | None = None
+    avg_approval_wait_sec: float | None = None
+    avg_execution_sec: float | None = None
+    avg_lead_time_sec: float | None = None
+
+
 class CameraOut(CamelModel):
     """GET /api/cameras 응답 원소. API_LIST.md 9.2, 이슈 #27."""
 

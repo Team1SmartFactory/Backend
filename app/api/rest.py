@@ -3,6 +3,7 @@ from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
@@ -13,6 +14,7 @@ from app.api.schemas import (
     DetectionFeedbackOut,
     DetectionFeedbackRequest,
     InventoryPointOut,
+    KpiOut,
     LineOut,
     LineStockOverrideRequest,
     LineUpdateOut,
@@ -29,6 +31,7 @@ from app.store.db import get_session
 from app.store.models import (
     ACTIVE_EVENT_STATUSES,
     Bin,
+    Command as CommandRecord,
     DetectionFeedbackRecord,
     InventoryHistoryRecord,
     Line,
@@ -296,6 +299,78 @@ async def reject_shortage_event(event_id: str, db: Session = Depends(get_db)) ->
     event_out = _shortage_event_out(event)
     await hub.broadcast({"type": "line.shortage", "payload": event_out.model_dump(by_alias=True)})
     return event_out
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite는 tz를 벗겨 돌려줄 수 있다 — naive면 UTC로 간주한다(저장이 항상 UTC)."""
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _avg(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 1) if values else None
+
+
+@router.get("/kpi", response_model=KpiOut)
+def get_kpi(db: Session = Depends(get_db)) -> KpiOut:
+    """운영 지표 집계 (이슈 #59). 이미 쌓여 있는 타임스탬프만으로 계산한다.
+
+    완료 시각은 그 작업의 마지막 커맨드 발행 시각으로 근사한다: 3단계(UNLOAD_RESUME)
+    DONE이 도착한 그 순간 4단계(비글 복귀)가 발행되므로 오차는 ms 단위다. 완료
+    STATUS 자체의 수신 시각은 저장되지 않는다(status_events는 쓰는 곳이 없다).
+
+    실패와 반려는 겉보기 상태가 같은 rejected지만 approved_at으로 갈린다: 승인이
+    있었으면 로봇까지 갔다가 실패한 것(성공률 분모), 없었으면 사람이 감지를
+    반려한 것(오탐 판정, 성공률과 무관).
+    """
+    events = db.query(ShortageEvent).all()
+    completed = [e for e in events if e.status == "completed"]
+    failed = [e for e in events if e.status == "rejected" and e.approved_at is not None]
+    human_rejected = [e for e in events if e.status == "rejected" and e.approved_at is None]
+    active = sum(1 for e in events if e.status in ("dispatched", "in_transit"))
+    pending = sum(1 for e in events if e.status == "pending_approval")
+
+    finished_at: dict[str, datetime] = {}
+    done_ids = [e.id for e in completed]
+    if done_ids:
+        rows = (
+            db.query(CommandRecord.job_id, func.max(CommandRecord.issued_at))
+            .filter(CommandRecord.job_id.in_(done_ids))
+            .group_by(CommandRecord.job_id)
+            .all()
+        )
+        finished_at = {job_id: ts for job_id, ts in rows if ts is not None}
+
+    approval_waits: list[float] = []
+    execution_secs: list[float] = []
+    lead_secs: list[float] = []
+    for event in completed:
+        finished = finished_at.get(event.id)
+        if event.approved_at is not None:
+            wait = (_as_utc(event.approved_at) - _as_utc(event.detected_at)).total_seconds()
+            if wait >= 0:
+                approval_waits.append(wait)
+            if finished is not None:
+                run = (_as_utc(finished) - _as_utc(event.approved_at)).total_seconds()
+                if run >= 0:
+                    execution_secs.append(run)
+        if finished is not None:
+            lead = (_as_utc(finished) - _as_utc(event.detected_at)).total_seconds()
+            if lead >= 0:
+                lead_secs.append(lead)
+
+    attempted = len(completed) + len(failed)
+    return KpiOut(
+        total_detected=len(events),
+        completed=len(completed),
+        failed=len(failed),
+        human_rejected=len(human_rejected),
+        active=active,
+        pending=pending,
+        success_rate=round(len(completed) / attempted, 3) if attempted else None,
+        avg_approval_wait_sec=_avg(approval_waits),
+        avg_execution_sec=_avg(execution_secs),
+        avg_lead_time_sec=_avg(lead_secs),
+    )
 
 
 @router.post("/shortage-events/{event_id}/restock", response_model=ShortageEventOut)
